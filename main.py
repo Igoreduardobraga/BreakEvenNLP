@@ -1,8 +1,7 @@
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TrainingArguments
 from datasets import Dataset
-from data import ICLDataset, FineTuningDataset, DatasetLoader, PromptDataset, SimilarityICLDataset, InstructionTuningDataset, MetaLearningDataset
+from data import ICLDataset, FineTuningDataset, DatasetLoader, PromptDataset, SimilarityICLDataset, InstructionTuningDataset
 from transfer_learning.models import BERTBase, RoBERTaBase
-from meta_learning import MAML, FOMAML, Reptile, MetaLearner, ProtoNetMeta, MetaSimpleCnnText, MetaSimpleCnnTextProto, DenseClassifier
 import random
 import pickle
 import argparse
@@ -18,22 +17,22 @@ import torch.nn.functional as F
 
 from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
 
-def parse_results(text, classes):
-    pred = -1
-    if DATASET in ['cola', 'mrpc'] and PROMPT_FORMAT in [3]:
-        for idx, cls in enumerate(classes):
-            if (cls.lower() in text.lower()) or (str(idx) in text):
-                pred = idx
-                break
-    else:
-        for idx, cls in enumerate(classes):
-            if (cls.lower() in text.lower()) or (str(idx) in text):
-                if pred == -1:
-                    pred = idx
-                else:
-                    pred = -1
-                    break
-    return pred
+# def parse_results(text, classes):
+#     pred = -1
+#     if DATASET in ['cola', 'mrpc'] and PROMPT_FORMAT in [3]:
+#         for idx, cls in enumerate(classes):
+#             if (cls.lower() in text.lower()) or (str(idx) in text):
+#                 pred = idx
+#                 break
+#     else:
+#         for idx, cls in enumerate(classes):
+#             if (cls.lower() in text.lower()) or (str(idx) in text):
+#                 if pred == -1:
+#                     pred = idx
+#                 else:
+#                     pred = -1
+#                     break
+#     return pred
         
 
 def parse_results(text, classes):
@@ -636,7 +635,7 @@ def ft_experiment(randomness_factor_seeds):
         tokenizer=tokenizer,
         max_len=MAX_LEN
     )
-    loader = DatasetLoader('sst2', BATCH_SIZE, dataset, randomness_factor_seeds['sample_order'])
+    loader = DatasetLoader(DATASET, BATCH_SIZE, dataset, randomness_factor_seeds['sample_order'])
     trainloader = loader.trainloader()
     testloader = loader.testloader()
 
@@ -678,88 +677,12 @@ def ft_experiment(randomness_factor_seeds):
     return golden, predictions
 
 
-def meta_learning_experiment(randomness_factor_seeds):
-    META_MODEL_MAPPING = {
-        'maml': MAML,
-        'fomaml': FOMAML,
-        'protonet': ProtoNetMeta,
-        'reptile': Reptile,
-    }
-
-    BASE_MODEL_MAPPING = {
-        'protonet': MetaSimpleCnnTextProto,
-        'maml': MetaSimpleCnnText,
-        'fomaml': MetaSimpleCnnText,
-        'reptile': MetaSimpleCnnText,
-    }
-
-    OPTIMIZER_MAPPING = {
-        'SGD': torch.optim.SGD,
-        'Adam': torch.optim.Adam
-    }
-
-
-    dataset = MetaLearningDataset(
-        dataset_name=DATASET,
-        train_size=args.train_size,
-        num_labelled=args.num_labelled,
-        num_labelled_test=args.num_labelled_test,
-        split_seed=randomness_factor_seeds['data_split'],
-        label_seed=randomness_factor_seeds['label_choice'],
-        device=device,
-        full_test=FULL_TEST,
-        max_len=MAX_LEN,
-        num_tasks=args.num_tasks,
-        num_shots=args.num_shots, 
-        choice_seed=randomness_factor_seeds['sample_choice'],
-        order_seed=randomness_factor_seeds['sample_order'],
-    )
-    base_model = BASE_MODEL_MAPPING[args.model](
-        sentence_length=MAX_LEN,
-        embedding_dim=768,
-        n_filters=128,
-        filter_size=5,
-        pool_size=2,
-        hidden_size=128,
-        num_classes=2,
-        init_seed=randomness_factor_seeds['model_initialisation'],
-        randomness_seed=randomness_factor_seeds['model_randomness']
-    )
-
-    meta_model = META_MODEL_MAPPING[args.model](
-        model=base_model,
-        params={
-            'meta_lr': args.meta_lr,
-            'base_lr': args.lr,
-            'meta_optimizer': OPTIMIZER_MAPPING[args.meta_optimizer],
-            'base_optimizer': OPTIMIZER_MAPPING[args.base_optimizer],
-            'loss_function': F.cross_entropy,
-            'inner_iterations': args.inner_iterations,
-            'lr_scheduler': torch.optim.lr_scheduler.StepLR
-        },
-        devide=device
-    )
-
-    meta_learner = MetaLearner(meta_model)
-
-    meta_learner.train(
-        dataset,
-        num_batches=args.num_batches,
-        epochs=args.num_epochs,
-        verbose=False
-    )
-
-    dataset.num_shots = args.num_shots_test
-    predicted, golden = meta_learner.evaluate_in_batch(dataset, 128)
-    return predicted, golden
-
-
 
 parser = argparse.ArgumentParser()
 # Meta
 parser.add_argument('--experiment_name', default='investigation_experiments', type=str, help='Directory to save experiments to')
 parser.add_argument('--configuration_name', default='stability', type=str, help='Further distinction for the save directory')
-parser.add_argument('--experiment_type', default='icl', type=str, choices=['finetuning', 'prompting', 'icl', 'icl_similarity', 'instruction_tuning' 'instruction_tuning_steps', 'meta_learning'], help='Type of experiment to run')
+parser.add_argument('--experiment_type', default='icl', type=str, choices=['finetuning', 'prompting', 'icl', 'icl_similarity', 'instruction_tuning', 'instruction_tuning_steps'], help='Type of experiment to run')
 parser.add_argument('--full_test', default=1, type=int, help='Whether to use whole test dataset (Yes (default): 1; No: 0). If "No" and "num_labelled_test" is not set then uses same number of labelled samples as defined by num_labelled')
 parser.add_argument('--regenerate', default=0, type=int, help='Whether to calculate every result again or continue from checkpoint (Yes: 1; No (default): 0).')
 # General training args
@@ -783,14 +706,6 @@ parser.add_argument('--investigation_seed', default=27, type=int, help='Seed for
 # Investigation
 parser.add_argument('--investigation_runs', default=10, type=int, help='Number of different configurations for investigating chosen randomness factor.')
 parser.add_argument('--mitigation_runs', default=100, type=int, help='Number of different configurations for mitigating other randomness factors.')
-# Meta-Learning specific
-parser.add_argument('--num_tasks', default=16, type=int, help='Number of different tasks to use in meta-learning experiments.')
-parser.add_argument('--meta_optimizer', default='Adam', type=str, choices=['Adam', 'SGD'], help='Optimizer to use for the meta model in meta-learning.')
-parser.add_argument('--base_optimizer', default='SGD', type=str, choices=['Adam', 'SGD'], help='Optimizer to use for the base model in meta-learning.')
-parser.add_argument('--num_shots_test', default=15, type=int, help='Number of samples in evaluation tasks in meta-learning.')
-parser.add_argument('--num_batches', default=64, type=int, help='Number of batches to run in meta-learning.')
-parser.add_argument('--meta_lr', default=1e-5, type=float)
-parser.add_argument('--inner_iterations', default=1, type=int, help='Number of inner adaptation steps')
 
 parser.add_argument('-f')
 args = parser.parse_args()
@@ -900,7 +815,7 @@ elif EXPERIMENT_TYPE in ('icl', 'prompting', 'icl_similarity'):
         generation_config.temperature = None
         model.eval()
     elif MODEL in ['mistral', 'zephyr']:
-        model = AutoModelForCausalLM.from_pretrained(model_name, load_in_4bit=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, load_in_4bit=True, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         tokenizer.padding_side = 'left'
         tokenizer.add_special_tokens({'pad_token': '[PAD]'})
@@ -941,8 +856,6 @@ for mit_idx, mitigation_seed in enumerate(mitigation_seeds):
         if EXPERIMENT_TYPE in ['finetuning']:
             print(f'Running fine-tuning experiments!')
             golden, predicted = ft_experiment(randomness_factor_seeds)
-        elif EXPERIMENT_TYPE == 'meta_learning':
-            golden, predicted = meta_learning_experiment(randomness_factor_seeds)
         elif EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
             golden, predicted, decodeds = instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer, investigation_path)
         elif MODEL == 'chatgpt':
@@ -957,7 +870,8 @@ for mit_idx, mitigation_seed in enumerate(mitigation_seeds):
         results['base_model'] = model_name
         results['mitigation_idx'] = mit_idx
         results['investigation_idx'] = inv_idx
-        results['decodeds'] = decodeds
+        if EXPERIMENT_TYPE != 'finetuning':
+            results['decodeds'] = decodeds
 
         with open(os.path.join(investigation_path, 'results.json'), 'w') as file:
             json.dump(results, file)

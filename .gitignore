@@ -5,3 +5,4 @@ a_new_result/*
 backup/*
 pickled/*
 __pycache__
+.venv

@@ -11,11 +11,9 @@ transformers
 datasets
 accelerate
 bitsandbytes
-openai
 peft
-pytorch
-pytorch-cuda
 sentencepiece
 tokenizers
-trl
-torchmeta
+trl==0.9.6
+
+# Baixar pytorch seguindo esse link para evitar conflitos e instalar versões não compativeis do cuda com a gpu https://pytorch.org/get-started/locally/
