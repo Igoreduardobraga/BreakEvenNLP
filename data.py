@@ -1,3 +1,5 @@
+# data.py
+
 import torch
 import copy
 import os
@@ -138,7 +140,7 @@ class TextDataset(Dataset):
             return texts, data.label.tolist()
         elif self.dataset_name == 'trec':
             print('Using TREC dataset')
-            dataset = load_dataset('trec')
+            dataset = load_dataset("CogComp/trec", revision="refs/convert/parquet")
             data = pd.concat([pd.DataFrame(dataset['train']), pd.DataFrame(dataset['test'])])
             self.classes = ['Expression', 'Entity', 'Description', 'Human', 'Location', 'Number']
             return data.text.tolist(), data.coarse_label.tolist()
