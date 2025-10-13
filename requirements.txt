@@ -8,7 +8,7 @@ tqdm
 langdetect
 scipy
 transformers
-datasets
+datasets<4
 accelerate
 bitsandbytes
 peft

@@ -6,3 +6,4 @@ backup/*
 pickled/*
 __pycache__
 .venv
+result_original
