@@ -1,19 +1,20 @@
-pandas
-numpy
-seaborn
-matplotlib
-scikit-learn
-requests
-tqdm
-langdetect
-scipy
-transformers
-datasets<4
-accelerate
-bitsandbytes
-peft
-sentencepiece
-tokenizers
+pandas==2.3.3
+numpy==1.26.4
+seaborn==0.13.2
+matplotlib==3.10.6
+scikit-learn==1.7.2
+requests==2.32.5
+tqdm==4.67.1
+langdetect==1.0.9
+scipy==1.16.2
+transformers==4.56.2
+datasets==3.6.0
+accelerate==1.10.1
+bitsandbytes==0.47.0
+peft==0.17.1
+sentencepiece==0.2.1
+tokenizers==0.22.1
 trl==0.9.6
 
-# Baixar pytorch seguindo esse link para evitar conflitos e instalar versões não compativeis do cuda com a gpu https://pytorch.org/get-started/locally/
+# Baixar pytorch seguindo esse link para evitar conflitos e instalar versões não compativeis do cuda com a gpu:
+# https://pytorch.org/get-started/locally/
