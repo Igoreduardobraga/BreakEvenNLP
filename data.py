@@ -193,11 +193,10 @@ class DatasetLoader():
 class TextDataset(Dataset):
 
     def __init__(self, dataset_name, train_size=0.8, num_labelled=1000, num_labelled_test=1000,
-                 split_seed=0, label_seed=0, device=None, full_test=True, prompt_format=0,
+                 label_seed=0, device=None, full_test=True, prompt_format=0,
                  train_test_indices=None):
         self.dataset_name = dataset_name
         self.train = True
-        self.split_seed = split_seed
         self.label_seed = label_seed
         self.full_test = full_test
 
@@ -220,11 +219,7 @@ class TextDataset(Dataset):
 
     def split_train_test(self, train_test_indices=None):
         if train_test_indices is None:
-            old_state = torch.get_rng_state()
-            torch.manual_seed(self.split_seed)
-            indices = list(range(len(self.text)))
-            self.train_indices, self.test_indices = train_test_split(indices, train_size=self.train_size, random_state=self.split_seed, stratify=self.targets)
-            torch.set_rng_state(old_state)
+            raise ValueError("train_test_indices must be provided when using external KFold.")
         else:
             self.train_indices, self.test_indices = train_test_indices
 
@@ -393,11 +388,11 @@ class TextDataset(Dataset):
 class ICLDataset(TextDataset):
 
     def __init__(self, dataset_name, train_size=0.8, num_labelled=1000, num_labelled_test=1000,
-                 split_seed=0, label_seed=0, device=None, full_test=True, num_shots=2,
+                 label_seed=0, device=None, full_test=True, num_shots=2,
                  num_classes=2, choice_seed=0, order_seed=0, model_name='flan-t5',
                  prompt_format=0, train_test_indices=None):
         super(ICLDataset, self).__init__(dataset_name, train_size, num_labelled, num_labelled_test,
-                                         split_seed, label_seed, device, full_test, prompt_format,
+                                         label_seed, device, full_test, prompt_format,
                                          train_test_indices)
         self.num_shots = num_shots
         self.choice_seed = choice_seed
@@ -484,11 +479,11 @@ class ICLDataset(TextDataset):
 class SimilarityICLDataset(ICLDataset):
 
     def __init__(self, dataset_name, train_size=0.8, num_labelled=1000, num_labelled_test=1000,
-                 split_seed=0, label_seed=0, device=None, full_test=True, num_shots=4,
+                 label_seed=0, device=None, full_test=True, num_shots=4,
                  num_classes=2, choice_seed=0, order_seed=0, model_name='flan-t5',
                  prompt_format=0, train_test_indices=None):
         super(SimilarityICLDataset, self).__init__(dataset_name, train_size, num_labelled, num_labelled_test,
-                                                   split_seed, label_seed, device, full_test, num_shots,
+                                                   label_seed, device, full_test, num_shots,
                                                    num_classes, choice_seed, order_seed, model_name,
                                                    prompt_format, train_test_indices)
         self.num_shots = num_shots
@@ -547,10 +542,10 @@ class SimilarityICLDataset(ICLDataset):
 
 class PromptDataset(TextDataset):
     def __init__(self, dataset_name, train_size=0.8, num_labelled=1000, num_labelled_test=1000,
-                 split_seed=0, label_seed=0, device=None, full_test=True, model_name='flan-t5',
+                 label_seed=0, device=None, full_test=True, model_name='flan-t5',
                  prompt_format=0, train_test_indices=None):
         super(PromptDataset, self).__init__(dataset_name, train_size, num_labelled, num_labelled_test,
-                                            split_seed, label_seed, device, full_test, prompt_format,
+                                            label_seed, device, full_test, prompt_format,
                                             train_test_indices)
         self.model_name = model_name
         self.instructions, self.context_samples = self.prepare_dataset_for_use()
@@ -593,10 +588,10 @@ class PromptDataset(TextDataset):
 
 class InstructionTuningDataset(ICLDataset):
     def __init__(self, dataset_name, train_size=0.8, num_labelled=1000, num_labelled_test=1000,
-                 split_seed=0, label_seed=0, device=None, full_test=True, model_name='flan-t5',
+                 label_seed=0, device=None, full_test=True, model_name='flan-t5',
                  prompt_format=0, train_test_indices=None):
         super(InstructionTuningDataset, self).__init__(dataset_name, train_size, num_labelled, num_labelled_test,
-                                                       split_seed, label_seed, device, full_test, 0, 0, 0, 0,
+                                                       label_seed, device, full_test, 0, 0, 0, 0,
                                                        model_name, prompt_format, train_test_indices)
         self.model_name = model_name
         self.instructions, self.context_samples = self.prepare_dataset_for_use()
@@ -638,10 +633,10 @@ class InstructionTuningDataset(ICLDataset):
 class FineTuningDataset(TextDataset):
 
     def __init__(self, dataset_name, train_size=0.8, num_labelled=1000, num_labelled_test=1000,
-                 split_seed=0, label_seed=0, device=None, full_test=True, tokenizer=None,
+                 label_seed=0, device=None, full_test=True, tokenizer=None,
                  max_len=50, train_test_indices=None):
         super(FineTuningDataset, self).__init__(dataset_name, train_size, num_labelled, num_labelled_test,
-                                                split_seed, label_seed, device, full_test, prompt_format=0,
+                                                label_seed, device, full_test, prompt_format=0,
                                                 train_test_indices=train_test_indices)
         self.tokenizer = tokenizer
         self.train = True

@@ -405,7 +405,6 @@ def prompt_icl_experiment(randomness_factor_seeds, model, tokenizer, experiment=
             train_size=args.train_size,
             num_labelled=args.num_labelled,
             num_labelled_test=args.num_labelled_test,
-            split_seed=randomness_factor_seeds['data_split'],
             label_seed=randomness_factor_seeds['label_choice'],
             device=device,
             full_test=FULL_TEST,
@@ -423,7 +422,6 @@ def prompt_icl_experiment(randomness_factor_seeds, model, tokenizer, experiment=
             train_size=args.train_size,
             num_labelled=args.num_labelled,
             num_labelled_test=args.num_labelled_test,
-            split_seed=randomness_factor_seeds['data_split'],
             label_seed=randomness_factor_seeds['label_choice'],
             device=device,
             full_test=FULL_TEST,
@@ -515,7 +513,6 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         train_size=args.train_size,
         num_labelled=args.num_labelled,
         num_labelled_test=args.num_labelled_test,
-        split_seed=randomness_factor_seeds['data_split'],
         label_seed=randomness_factor_seeds['label_choice'],
         device=device,
         full_test=FULL_TEST,
@@ -622,7 +619,6 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
         train_size=args.train_size,
         num_labelled=args.num_labelled,
         num_labelled_test=args.num_labelled_test,
-        split_seed=randomness_factor_seeds['data_split'],
         label_seed=randomness_factor_seeds['label_choice'],
         device=device,
         full_test=FULL_TEST,
@@ -637,6 +633,7 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
     net = FT_MODELS[MODEL](dataset.n_classes, randomness_factor_seeds['model_initialisation'], randomness_factor_seeds['model_randomness'], True)
     net.cuda()
     optimizer = torch.optim.AdamW(params=net.parameters(), lr=LEARNING_RATE)
+    
     loss_fn = torch.nn.CrossEntropyLoss()
 
     net.train()
@@ -699,12 +696,6 @@ parser.add_argument('--prompt_format', default=0, type=int, help='Which prompt f
 parser.add_argument('--rskf_splits', default=10, type=int, help='Number of folds for RepeatedStratifiedKFold (K).')
 parser.add_argument('--rskf_repeats', default=1, type=int, help='Number of repeats for RepeatedStratifiedKFold (R).')
 parser.add_argument('--rskf_seed', default=27, type=int, help='Random state for RepeatedStratifiedKFold.')
-# Seeds
-parser.add_argument('--mitigation_seed', default=42, type=int, help='Seed for generating seeds for investigation')
-parser.add_argument('--investigation_seed', default=27, type=int, help='Seed for generating seeds for investigation')
-# Investigation
-parser.add_argument('--investigation_runs', default=10, type=int, help='Number of different configurations for investigating chosen randomness factor.')
-parser.add_argument('--mitigation_runs', default=100, type=int, help='Number of different configurations for mitigating other randomness factors.')
 
 parser.add_argument('-f')
 args = parser.parse_args()
@@ -799,6 +790,29 @@ elif EXPERIMENT_TYPE in ('icl', 'prompting', 'icl_similarity'):
 else:
     model_name = f'{MODEL}-{MODEL_SIZE}{"-uncased" if MODEL == "bert" else ""}'
     
+total_runs = args.rskf_repeats * args.rskf_splits
+run_seeds_path = os.path.join(RESULTS_PATH, 'run_seeds.pkl')
+
+if os.path.exists(run_seeds_path) and args.regenerate == 0:
+    with open(run_seeds_path, 'rb') as file:
+        print(f'Loading existing run seeds:')
+        run_seeds = pickle.load(file)
+        if len(run_seeds) != total_runs:
+             print(f"Warning: Number of saved seeds ({len(run_seeds)}) doesn't match expected runs ({total_runs}). Regenerating.")
+             random.seed(args.rskf_seed)
+             run_seeds = [random.randint(1, 100000) for _ in range(total_runs)]
+             with open(run_seeds_path, 'wb') as file:
+                 pickle.dump(run_seeds, file)
+else:
+    print(f'Generating new run seeds:')
+    random.seed(args.rskf_seed)
+    run_seeds = [random.randint(1, 100000) for _ in range(total_runs)]
+    print(f'Saving new run seeds:')
+    with open(run_seeds_path, 'wb') as file:
+        pickle.dump(run_seeds, file)
+
+print(f'Using seeds: {run_seeds}')
+
 _, all_targets, _ = load_text_and_targets(DATASET, PROMPT_FORMAT)
 all_targets = np.array(all_targets)
 n_samples = len(all_targets)
@@ -827,17 +841,16 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
         continue
 
 
-    const_seed = args.rskf_seed
-    randomness_factor_seeds = {
-        'data_split':        const_seed,
-        'label_choice':      const_seed,
-        'sample_choice':     const_seed,
-        'sample_order':      const_seed,
-        'model_initialisation': const_seed,
-        'model_randomness':  const_seed
-    }
+    current_run_seed = run_seeds[split_idx]
+    print(f'Running RSKF repeat {r}, fold {k} | train={len(train_idx)} test={len(test_idx)} | Seed: {current_run_seed}')
 
-    print(f'Running RSKF repeat {r}, fold {k} | train={len(train_idx)} test={len(test_idx)}')
+    randomness_factor_seeds = {
+        'label_choice':       current_run_seed,
+        'sample_choice':      current_run_seed,
+        'sample_order':       current_run_seed,
+        'model_initialisation': current_run_seed,
+        'model_randomness':   current_run_seed
+    }
 
     if EXPERIMENT_TYPE in ['finetuning']:
         print('Running fine-tuning experiments!')
@@ -871,6 +884,7 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
     results['base_model'] = model_name
     results['rskf_repeat'] = int(r)
     results['rskf_fold'] = int(k)
+    results['run_seed_used'] = current_run_seed
     if decodeds is not None:
         results['decodeds'] = decodeds
 
