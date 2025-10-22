@@ -1,6 +1,6 @@
 # main.py
 
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments, get_linear_schedule_with_warmup
 from datasets import Dataset
 from data import ICLDataset, FineTuningDataset, DatasetLoader, PromptDataset, SimilarityICLDataset, InstructionTuningDataset, TextDataset, load_text_and_targets
 from transfer_learning.models import BERTBase, RoBERTaBase
@@ -634,11 +634,19 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
     net.cuda()
     optimizer = torch.optim.AdamW(params=net.parameters(), lr=LEARNING_RATE)
     
+    total_steps = len(trainloader) * NUM_EPOCHS
+    warmup_steps = max(1, int(0.1 * total_steps))
+    
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_steps
+    )
+    
     loss_fn = torch.nn.CrossEntropyLoss()
 
-    net.train()
-
     for epoch in range(NUM_EPOCHS):
+        net.train()
         for batch_idx, data in enumerate(trainloader):
             ids = data['ids'].to(device, dtype=torch.long)
             mask = data['mask'].to(device, dtype=torch.long)
@@ -651,6 +659,8 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
 
             loss.backward()
             optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
     
     golden = []
     predictions = []
