@@ -2,7 +2,7 @@
 
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments
 from datasets import Dataset
-from data import ICLDataset, FineTuningDataset, DatasetLoader, PromptDataset, SimilarityICLDataset, InstructionTuningDataset, TextDataset
+from data import ICLDataset, FineTuningDataset, DatasetLoader, PromptDataset, SimilarityICLDataset, InstructionTuningDataset, TextDataset, load_text_and_targets
 from transfer_learning.models import BERTBase, RoBERTaBase
 import random
 import pickle
@@ -18,7 +18,7 @@ from sklearn.model_selection import RepeatedStratifiedKFold
 import time
 import torch.nn.functional as F
 
-from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
+from trl import SFTTrainer, DataCollatorForCompletionOnlyLM, SFTConfig
         
 
 def parse_results(text, classes):
@@ -566,7 +566,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
     else:
         max_steps = -1
 
-    training_args = TrainingArguments(
+    training_args = SFTConfig(
         output_dir=investigation_path,
         per_device_train_batch_size=BATCH_SIZE,
         learning_rate=LEARNING_RATE,
@@ -575,9 +575,12 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         save_strategy="no",
         max_steps=max_steps,
         gradient_accumulation_steps=1,
-        optim="paged_adamw_8bit" if MODEL in ['mistral', 'zephyr'] else 'adamw',
+        optim="paged_adamw_8bit" if MODEL in ['mistral', 'zephyr'] else 'adamw_torch',
         lr_scheduler_type="linear",
-        warmup_steps=10,        
+        warmup_ratio=0.1,
+        dataset_text_field="prompt",
+        max_seq_length=512,
+        packing=False,
     )
 
     collator = DataCollatorForCompletionOnlyLM(response_template, tokenizer=tokenizer)
@@ -586,13 +589,10 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         model=model,
         args=training_args,
         train_dataset=tuning_dataset,
-        dataset_text_field='prompt',
         data_collator=collator,
-        max_seq_length=512,
-        peft_config=peft_config if MODEL in ['mistral', 'zephyr'] else None
+        tokenizer=tokenizer,
+        peft_config=peft_config if MODEL in ['mistral', 'zephyr'] else None,
     )
-
-    
 
     trainer.train()
     if MODEL in ['mistral', 'zephyr']:
@@ -799,19 +799,8 @@ elif EXPERIMENT_TYPE in ('icl', 'prompting', 'icl_similarity'):
 else:
     model_name = f'{MODEL}-{MODEL_SIZE}{"-uncased" if MODEL == "bert" else ""}'
     
-_tmp = TextDataset(
-    dataset_name=DATASET,
-    train_size=args.train_size,
-    num_labelled=args.num_labelled,
-    num_labelled_test=args.num_labelled_test,
-    split_seed=0,
-    label_seed=0,
-    device=device,
-    full_test=FULL_TEST,
-    prompt_format=PROMPT_FORMAT,
-    train_test_indices=None
-)
-all_targets = np.array(_tmp.targets)
+_, all_targets, _ = load_text_and_targets(DATASET, PROMPT_FORMAT)
+all_targets = np.array(all_targets)
 n_samples = len(all_targets)
 
 rskf = RepeatedStratifiedKFold(

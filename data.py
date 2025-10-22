@@ -12,6 +12,7 @@ from sklearn.model_selection import train_test_split
 import pandas as pd
 from torch.utils.data import RandomSampler, DataLoader, Dataset
 from transformers import BertModel, BertTokenizer
+from functools import lru_cache
 
 class SeededRandomSampler(RandomSampler):
 
@@ -38,6 +39,134 @@ class SeededRandomSampler(RandomSampler):
         torch.set_rng_state(old_state)
         return iterator
 
+@lru_cache(maxsize=None)
+def load_text_and_targets(dataset_name: str, prompt_format: int):
+    if dataset_name == 'sst2':
+        dataset = load_dataset('glue', 'sst2')
+        data = pd.concat([pd.DataFrame(dataset['train']),
+                          pd.DataFrame(dataset['validation'])])
+        if prompt_format in [0, 1, 2]:
+            classes = ['negative', 'positive']
+        elif prompt_format in [3]:
+            classes = ['terrible', 'great']
+        else:
+            raise NotImplementedError(f'prompt_format {prompt_format} não suportado para sst2')
+        texts   = data['sentence'].tolist()
+        targets = data['label'].tolist()
+        return tuple(texts), tuple(targets), tuple(classes)
+
+    elif dataset_name == 'cola':
+        dataset = load_dataset('glue', 'cola')
+        data = pd.concat([pd.DataFrame(dataset['train']),
+                          pd.DataFrame(dataset['validation'])])
+        if prompt_format in [0, 1]:
+            classes = ['No', 'Yes']
+        elif prompt_format in [2]:
+            classes = ['Yes', 'No']
+        elif prompt_format in [3]:
+            classes = ['not acceptable', 'acceptable']
+        else:
+            raise NotImplementedError(f'prompt_format {prompt_format} não suportado para cola')
+        texts   = data['sentence'].tolist()
+        targets = data['label'].tolist()
+        return tuple(texts), tuple(targets), tuple(classes)
+
+    elif dataset_name == 'mrpc':
+        dataset = load_dataset('glue', 'mrpc')
+        data = pd.concat([pd.DataFrame(dataset['train']),
+                          pd.DataFrame(dataset['validation']),
+                          pd.DataFrame(dataset['test'])])
+        texts = [
+            f"Sentence 1: {s1}; Sentence 2: {s2}"
+            for s1, s2 in zip(data['sentence1'].tolist(), data['sentence2'].tolist())
+        ]
+        if prompt_format in [0, 1]:
+            classes = ['No', 'Yes']
+        elif prompt_format in [2]:
+            classes = ['Yes', 'No']
+        elif prompt_format in [3]:
+            classes = ['not equivalent', 'equivalent']
+        else:
+            raise NotImplementedError(f'prompt_format {prompt_format} não suportado para mrpc')
+        targets = data['label'].tolist()
+        return tuple(texts), tuple(targets), tuple(classes)
+
+    elif dataset_name == 'rte':
+        dataset = load_dataset('glue', 'rte')
+        data = pd.concat([pd.DataFrame(dataset['train']),
+                          pd.DataFrame(dataset['validation'])])
+        texts = [
+            f"Premise: {p}; Hypothesis: {h}"
+            for p, h in zip(data['sentence1'].tolist(), data['sentence2'].tolist())
+        ]
+        classes = ['not entailment', 'entailment']
+        targets = data['label'].tolist()
+        return tuple(texts), tuple(targets), tuple(classes)
+
+    elif dataset_name == 'boolq':
+        dataset = load_dataset('super_glue', 'boolq')
+        data = pd.concat([pd.DataFrame(dataset['train']),
+                          pd.DataFrame(dataset['validation'])])
+        texts = [
+            f"Question: {q}\nPassage: {passage}"
+            for q, passage in zip(data['question'].tolist(), data['passage'].tolist())
+        ]
+        classes = ['No', 'Yes']
+        targets = data['label'].tolist()
+        return tuple(texts), tuple(targets), tuple(classes)
+
+    elif dataset_name == 'trec':
+        dataset = load_dataset("CogComp/trec", revision="refs/convert/parquet")
+        data = pd.concat([pd.DataFrame(dataset['train']),
+                          pd.DataFrame(dataset['test'])])
+        classes = ['Expression', 'Entity', 'Description', 'Human', 'Location', 'Number']
+        texts   = data['text'].tolist()
+        targets = data['coarse_label'].tolist()
+        return tuple(texts), tuple(targets), tuple(classes)
+
+    elif dataset_name == 'ag_news':
+        dataset = load_dataset('ag_news')
+        data = pd.concat([pd.DataFrame(dataset['train']),
+                          pd.DataFrame(dataset['test'])])
+        classes = ['World', 'Sports', 'Business', 'Science and Technology']
+        texts   = data['text'].tolist()
+        targets = data['label'].tolist()
+        return tuple(texts), tuple(targets), tuple(classes)
+
+    elif dataset_name == 'snips':
+        dataset = load_dataset('benayas/snips')
+        data = pd.concat([pd.DataFrame(dataset['train']),
+                          pd.DataFrame(dataset['test'])])
+        mapper = {
+            'AddToPlaylist':        0,
+            'GetWeather':           1,
+            'SearchScreeningEvent': 2,
+            'PlayMusic':            3,
+            'SearchCreativeWork':   4,
+            'RateBook':             5,
+            'BookRestaurant':       6,
+        }
+        data['label'] = data['category'].apply(lambda x: mapper[x])
+        classes = ['Playlist', 'Weather', 'Event', 'Musing', 'Creative Work', 'Rate Book', 'Book Restaurant']
+        texts   = data['text'].tolist()
+        targets = data['label'].tolist()
+        return tuple(texts), tuple(targets), tuple(classes)
+
+    elif dataset_name == 'db_pedia':
+        dataset = load_dataset('fancyzhx/dbpedia_14')
+        data = pd.concat([pd.DataFrame(dataset['train']),
+                          pd.DataFrame(dataset['test'])])
+        classes = [
+            'Company', 'Educational Institution', 'Artist', 'Athlete', 'Office Holder',
+            'Transportation', 'Building', 'Natural Place', 'Village', 'Animal',
+            'Plant', 'Album', 'Film', 'Written Work'
+        ]
+        texts   = data['content'].tolist()
+        targets = data['label'].tolist()
+        return tuple(texts), tuple(targets), tuple(classes)
+
+    else:
+        raise NotImplementedError(f'O dataset "{dataset_name}" não é suportado nesta função.')
 
 class DatasetLoader():
 
@@ -81,103 +210,12 @@ class TextDataset(Dataset):
         self.device = device
         self.prompt_format = prompt_format
 
-        self.text, self.targets = self.initialise_dataset_from_huggingface()
+        t, y, c = load_text_and_targets(self.dataset_name, self.prompt_format)
+        self.text, self.targets, self.classes = list(t), list(y), list(c)
         self.num_classes = len(self.classes)
 
         self.split_train_test(train_test_indices=train_test_indices)
-
         self.select_labelled_data()
-
-
-    def initialise_dataset_from_huggingface(self):
-        if self.dataset_name == 'sst2':
-            print('Using SST-2 dataset.')
-            dataset = load_dataset('glue', self.dataset_name)
-            data = pd.concat([pd.DataFrame(dataset['train']), pd.DataFrame(dataset['validation'])])
-            if self.prompt_format in [0, 1, 2]:
-                self.classes = ['negative', 'positive']
-            elif self.prompt_format in [3]:
-                self.classes = ['terrible', 'great']
-            else:
-                raise NotImplemented
-            return data.sentence.tolist(), data.label.tolist()
-        elif self.dataset_name == 'cola':
-            print(f'Using cola dataset')
-            dataset = load_dataset('glue', self.dataset_name)
-            data = pd.concat([pd.DataFrame(dataset['train']), pd.DataFrame(dataset['validation'])])
-            if self.prompt_format in [0, 1]:
-                self.classes = ['No', 'Yes']
-            elif self.prompt_format in [2]:
-                self.classes = ['Yes', 'No']
-            elif self.prompt_format in [3]:
-                self.classes = ['not acceptable', 'acceptable']
-            else:
-                raise NotImplemented
-            return data.sentence.tolist(), data.label.tolist()
-        elif self.dataset_name == 'mrpc':
-            print('Using mrpc')
-            dataset = load_dataset('glue', self.dataset_name)
-            data = pd.concat([pd.DataFrame(dataset['train']), pd.DataFrame(dataset['validation']), pd.DataFrame(dataset['test'])])
-            texts = [f'Sentence 1: {sent1}; Sentence 2: {sent2}' for sent1, sent2 in zip(data.sentence1.tolist(), data.sentence2.tolist())]
-            if self.prompt_format in [0, 1]:
-                self.classes = ['No', 'Yes']
-            elif self.prompt_format in [2]:
-                self.classes = ['Yes', 'No']
-            elif self.prompt_format in [3]:
-                self.classes = ['not equivalent', 'equivalent']
-            else:
-                raise NotImplemented
-            return texts, data.label.tolist()
-        elif self.dataset_name == 'rte':
-            print('Using rte')
-            dataset = load_dataset('glue', self.dataset_name)
-            data = pd.concat([pd.DataFrame(dataset['train']), pd.DataFrame(dataset['validation'])])
-            texts = [f'Premise: {sent1}; Hypothesis: {sent2}' for sent1, sent2 in zip(data.sentence1.tolist(), data.sentence2.tolist())]
-            self.classes = ['not entailment', 'entailment']
-            return texts, data.label.tolist()
-        elif self.dataset_name == 'boolq':
-            print('Using BoolQ dataset')
-            dataset = load_dataset('super_glue', self.dataset_name)
-            data = pd.concat([pd.DataFrame(dataset['train']), pd.DataFrame(dataset['validation'])])
-            texts = [f'Question: {question}\nPassage: {passage}' for question, passage in zip(data.question.tolist(), data.passage.tolist())]
-            self.classes = ['No', 'Yes']
-            return texts, data.label.tolist()
-        elif self.dataset_name == 'trec':
-            print('Using TREC dataset')
-            dataset = load_dataset("CogComp/trec", revision="refs/convert/parquet")
-            data = pd.concat([pd.DataFrame(dataset['train']), pd.DataFrame(dataset['test'])])
-            self.classes = ['Expression', 'Entity', 'Description', 'Human', 'Location', 'Number']
-            return data.text.tolist(), data.coarse_label.tolist()
-        elif self.dataset_name == 'ag_news':
-            print('Using AG News dataset')
-            dataset = load_dataset('ag_news')
-            data = pd.concat([pd.DataFrame(dataset['train']), pd.DataFrame(dataset['test'])])
-            self.classes = ['World', 'Sports', 'Business', 'Science and Technology']
-            return data.text.tolist(), data.label.tolist()
-        elif self.dataset_name == 'snips':
-            print('Using SNIPS dataset')
-            dataset = load_dataset('benayas/snips')
-            data = pd.concat([pd.DataFrame(dataset['train']), pd.DataFrame(dataset['test'])])
-            mapper = {
-                'AddToPlaylist':            0,
-                'GetWeather':               1,
-                'SearchScreeningEvent':     2,
-                'PlayMusic':                3,
-                'SearchCreativeWork':       4,
-                'RateBook':                 5,
-                'BookRestaurant':           6,
-            }
-            data['label'] = data['category'].apply(lambda x: mapper[x])
-            self.classes = ['Playlist', 'Weather', 'Event', 'Musing', 'Creative Work', 'Rate Book', 'Book Restaurant']
-            return data.text.tolist(), data.label.tolist()
-        elif self.dataset_name == 'db_pedia':
-            print('Using DB Pedia dataset')
-            dataset = load_dataset('fancyzhx/dbpedia_14')
-            data = pd.concat([pd.DataFrame(dataset['train']), pd.DataFrame(dataset['test'])])
-            self.classes = ['Company', 'Educational Institution', 'Artist', 'Athlete', 'Office Holder', 'Transportation', 'Building', 'Natural Place', 'Village', 'Animal', 'Plant', 'Album', 'Film', 'Written Work']
-            return data.content.tolist(), data.label.tolist()
-        else:
-            raise NotImplemented('The dataset cannot be initiated!')
 
 
     def split_train_test(self, train_test_indices=None):
@@ -195,7 +233,7 @@ class TextDataset(Dataset):
 
         self.test_text = [self.text[idx] for idx in self.test_indices]
         self.test_targets = [self.targets[idx] for idx in self.test_indices] 
-
+        
 
 
     def select_labelled_data(self):
@@ -277,7 +315,7 @@ class TextDataset(Dataset):
             elif prompt == 3:
                 instruction = 'It was'
             else:
-                raise NotImplemented
+                raise NotImplementedError()
             sentence_start = 'Sentence'
             answer_start = 'Answer'
             task_type = 'sentiment'
@@ -291,7 +329,7 @@ class TextDataset(Dataset):
             elif prompt == 3:
                 instruction = 'It is'
             else:
-                raise NotImplemented
+                raise NotImplementedError()
             sentence_start = 'Sentence'
             answer_start = 'Answer'
             task_type = 'grammatical acceptability'
@@ -305,7 +343,7 @@ class TextDataset(Dataset):
             elif prompt == 3:
                 instruction = 'Sentences are'
             else:
-                raise NotImplemented
+                raise NotImplementedError()
             sentence_start = 'Sentence Pair'
             answer_start = 'Answer'
             task_type = 'semantical equivalence'
@@ -329,7 +367,7 @@ class TextDataset(Dataset):
             elif prompt == 3:
                 instruction = 'This is about'
             else:
-                raise NotImplemented
+                raise NotImplementedError()
             sentence_start = 'Sentence'
             answer_start = 'Answer'
             task_type = 'topic'
@@ -343,7 +381,7 @@ class TextDataset(Dataset):
             elif prompt == 3:
                 instruction = 'User requested'
             else:
-                raise NotImplemented
+                raise NotImplementedError()
             sentence_start = 'Sentence'
             answer_start = 'Answer'
             task_type = 'intent'
