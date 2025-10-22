@@ -50,7 +50,7 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
         elif prompt_format in [3]:
             classes = ['terrible', 'great']
         else:
-            raise NotImplementedError(f'prompt_format {prompt_format} não suportado para sst2')
+            raise NotImplementedError(f'Prompt format {prompt_format} not supported for sst2')
         texts   = data['sentence'].tolist()
         targets = data['label'].tolist()
         return tuple(texts), tuple(targets), tuple(classes)
@@ -66,7 +66,7 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
         elif prompt_format in [3]:
             classes = ['not acceptable', 'acceptable']
         else:
-            raise NotImplementedError(f'prompt_format {prompt_format} não suportado para cola')
+            raise NotImplementedError(f'Prompt format {prompt_format} not supported for cola')
         texts   = data['sentence'].tolist()
         targets = data['label'].tolist()
         return tuple(texts), tuple(targets), tuple(classes)
@@ -87,7 +87,7 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
         elif prompt_format in [3]:
             classes = ['not equivalent', 'equivalent']
         else:
-            raise NotImplementedError(f'prompt_format {prompt_format} não suportado para mrpc')
+            raise NotImplementedError(f'Prompt format {prompt_format} not supported for mrpc')
         targets = data['label'].tolist()
         return tuple(texts), tuple(targets), tuple(classes)
 
@@ -147,7 +147,7 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
             'BookRestaurant':       6,
         }
         data['label'] = data['category'].apply(lambda x: mapper[x])
-        classes = ['Playlist', 'Weather', 'Event', 'Musing', 'Creative Work', 'Rate Book', 'Book Restaurant']
+        classes = ['Playlist', 'Weather', 'Event', 'Music', 'Creative Work', 'Rate Book', 'Book Restaurant']
         texts   = data['text'].tolist()
         targets = data['label'].tolist()
         return tuple(texts), tuple(targets), tuple(classes)
@@ -166,7 +166,7 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
         return tuple(texts), tuple(targets), tuple(classes)
 
     else:
-        raise NotImplementedError(f'O dataset "{dataset_name}" não é suportado nesta função.')
+        raise NotImplementedError(f'The dataset "{dataset_name}" is not supported in this function')
 
 class DatasetLoader():
 
@@ -311,7 +311,7 @@ class TextDataset(Dataset):
             elif prompt == 1:
                 instruction = 'Sentiment?'
             elif prompt == 2:
-                instruction = 'Senstiment is'
+                instruction = 'Sentiment is'
             elif prompt == 3:
                 instruction = 'It was'
             else:
