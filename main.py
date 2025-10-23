@@ -2,7 +2,7 @@
 
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments, get_linear_schedule_with_warmup
 from datasets import Dataset
-from data import ICLDataset, FineTuningDataset, DatasetLoader, PromptDataset, SimilarityICLDataset, InstructionTuningDataset, TextDataset, load_text_and_targets
+from data import ICLDataset, FineTuningDataset, DatasetLoader, PromptDataset, SimilarityICLDataset, InstructionTuningDataset, TextDataset, load_text_and_targets, SeededRandomSampler
 from transfer_learning.models import BERTBase, RoBERTaBase
 import random
 import pickle
@@ -14,9 +14,11 @@ import copy
 import json
 from peft import LoraConfig, PeftModelForCausalLM, prepare_model_for_kbit_training
 from sklearn.metrics import f1_score, accuracy_score
-from sklearn.model_selection import RepeatedStratifiedKFold
+from sklearn.model_selection import RepeatedStratifiedKFold, train_test_split
+from torch.utils.data import DataLoader
 import time
 import torch.nn.functional as F
+
 
 from trl import SFTTrainer, DataCollatorForCompletionOnlyLM, SFTConfig
         
@@ -611,6 +613,44 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
 
     return golden, predicted, decoded
 
+def make_train_val_loaders(dataset, batch_size, shuffle_seed):
+    indices = list(range(len(dataset.train_text)))
+    y = np.array(dataset.train_targets)
+    n_total = len(indices)
+    n_classes = dataset.n_classes  
+    test_size_ratio = 0.1          
+
+    n_val = int(n_total * test_size_ratio)
+
+    if n_val < n_classes:
+        print(f"Warning: Training set is too small for validation split")
+        print("Using the full dataset for training and skipping early stopping")
+        tr_idx = indices  
+        val_idx = []      
+    else:
+        tr_idx, val_idx = train_test_split(
+            indices, 
+            test_size=test_size_ratio,
+            random_state=shuffle_seed, 
+            stratify=y
+        )
+
+    train_ds = copy.copy(dataset);  train_ds.train = True
+    val_ds   = copy.copy(dataset);  val_ds.train   = True
+
+    train_ds.train_text   = [dataset.train_text[i]   for i in tr_idx]
+    train_ds.train_targets= [dataset.train_targets[i]for i in tr_idx]
+
+    val_ds.train_text     = [dataset.train_text[i]   for i in val_idx]
+    val_ds.train_targets  = [dataset.train_targets[i]for i in val_idx]
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size,
+                              sampler=SeededRandomSampler(train_ds, seed=shuffle_seed),
+                              pin_memory=True)
+    
+    val_loader   = DataLoader(val_ds, batch_size=64, shuffle=False, pin_memory=True)
+    
+    return train_loader, val_loader
 
 def ft_experiment(randomness_factor_seeds, train_test_indices=None):
     tokenizer = AutoTokenizer.from_pretrained(model_name, return_dict=False)
@@ -627,14 +667,15 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
         train_test_indices=train_test_indices
     )
     loader = DatasetLoader(DATASET, BATCH_SIZE, dataset, randomness_factor_seeds['sample_order'])
-    trainloader = loader.trainloader()
-    testloader = loader.testloader()
+    trainloader, valloader = make_train_val_loaders(dataset, BATCH_SIZE, randomness_factor_seeds['sample_order'])
+    testloader  = loader.testloader()
 
     net = FT_MODELS[MODEL](dataset.n_classes, randomness_factor_seeds['model_initialisation'], randomness_factor_seeds['model_randomness'], True)
     net.cuda()
     optimizer = torch.optim.AdamW(params=net.parameters(), lr=LEARNING_RATE)
     
-    total_steps = len(trainloader) * NUM_EPOCHS
+    num_epochs = min(args.num_epochs, 10)
+    total_steps = max(1, len(trainloader) * num_epochs)
     warmup_steps = max(1, int(0.1 * total_steps))
     
     scheduler = get_linear_schedule_with_warmup(
@@ -644,38 +685,70 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
     )
     
     loss_fn = torch.nn.CrossEntropyLoss()
+    
+    best_val = float('inf')
+    patience = 2
+    pat = 0
 
-    for epoch in range(NUM_EPOCHS):
+    for epoch in range(num_epochs):
         net.train()
         for batch_idx, data in enumerate(trainloader):
+            optimizer.zero_grad()
+            
             ids = data['ids'].to(device, dtype=torch.long)
             mask = data['mask'].to(device, dtype=torch.long)
             token_type_ids = data['token_type_ids'].to(device, dtype=torch.long)
             targets = data['targets'].to(device, dtype=torch.long)
 
-            optimizer.zero_grad()
             outputs = net(ids, mask, token_type_ids)
             loss = loss_fn(outputs, targets)
-
             loss.backward()
+            
             optimizer.step()
             scheduler.step()
-            optimizer.zero_grad()
+            
+        net.eval()
+        val_loss = 0.0
+        val_n = 0
+        with torch.no_grad():
+            for data in valloader:
+                ids = data['ids'].to(device, dtype=torch.long)
+                mask = data['mask'].to(device, dtype=torch.long)
+                token_type_ids = data['token_type_ids'].to(device, dtype=torch.long)
+                targets = data['targets'].to(device, dtype=torch.long)
+                logits = net(ids, mask, token_type_ids)
+                val_loss += loss_fn(logits, targets).item() * targets.size(0)
+                val_n += targets.size(0)
+        val_loss /= max(1, val_n)
+
+        if val_loss < best_val - 1e-4:
+            best_val = val_loss
+            best_state = copy.deepcopy(net.state_dict())
+            pat = 0
+        else:
+            pat += 1
+            if pat >= patience:
+                break
+    
+    if 'best_state' in locals():
+        net.load_state_dict(best_state)
     
     golden = []
     predictions = []
     
     net.eval()
-    for batch_idx, data in enumerate(testloader):
-        ids = data['ids'].to(device, dtype=torch.long)
-        mask = data['mask'].to(device, dtype=torch.long)
-        token_type_ids = data['token_type_ids'].to(device, dtype=torch.long)
+    with torch.no_grad():
+        for batch_idx, data in enumerate(testloader):
+            ids = data['ids'].to(device, dtype=torch.long)
+            mask = data['mask'].to(device, dtype=torch.long)
+            token_type_ids = data['token_type_ids'].to(device, dtype=torch.long)
+            targets = data['targets'].to(device, dtype=torch.long)
 
-        outputs = net(ids, mask, token_type_ids)
+            outputs = net(ids, mask, token_type_ids)
 
-        _, predicted = torch.max(outputs.data, 1)
-        predictions.extend(predicted.tolist())
-        golden.extend(data['targets'].tolist())
+            _, predicted = torch.max(outputs.data, 1)
+            predictions.extend(predicted.tolist())
+            golden.extend(targets.tolist())
     return golden, predictions
 
 
