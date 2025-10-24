@@ -1,6 +1,6 @@
 # main.py
 
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments, get_linear_schedule_with_warmup
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments, get_linear_schedule_with_warmup, EarlyStoppingCallback
 from datasets import Dataset
 from data import ICLDataset, FineTuningDataset, DatasetLoader, PromptDataset, SimilarityICLDataset, InstructionTuningDataset, TextDataset, load_text_and_targets, SeededRandomSampler
 from transfer_learning.models import BERTBase, RoBERTaBase
@@ -17,6 +17,7 @@ from sklearn.metrics import f1_score, accuracy_score
 from sklearn.model_selection import RepeatedStratifiedKFold, train_test_split
 from torch.utils.data import DataLoader
 import time
+import shutil
 import torch.nn.functional as F
 
 
@@ -107,18 +108,18 @@ def run_flan_t5(dataset, model, tokenizer):
         final_prompts = prepare_flan_t5_icl(dataset, data) if EXPERIMENT_TYPE == 'icl' else prepare_flan_t5_prompt(dataset, data)
         
         encoded = tokenizer(final_prompts, return_tensors='pt', padding='longest', truncation=True).to('cuda')
-        out = model.generate(**encoded, max_new_tokens=10)
+        out = model.generate(**encoded, max_new_tokens=10, do_sample=False, num_beams=1, temperature=0.0)
         decoded = tokenizer.batch_decode(out, skip_special_tokens=True)
 
-        print(decoded)
+        # print(decoded)
         decodeds.extend(decoded)
         
         predicted_labels = []
         for text in decoded:
             pred = parse_results(text, dataset.classes)
             predicted_labels.append(pred)
-        print(predicted_labels)
-        print(labels)
+        # print(predicted_labels)
+        # print(labels)
 
         predicted.extend(predicted_labels)
         golden.extend(labels)
@@ -177,7 +178,7 @@ def run_llama2(dataset, model, tokenizer):
         final_prompts = prepare_llama2_icl(dataset, data) if EXPERIMENT_TYPE == 'icl' else prepare_llama2_prompt(dataset, data)
 
         encoded = tokenizer(final_prompts, return_tensors='pt', padding='longest').to('cuda')
-        out = model.generate(**encoded, max_new_tokens=20, do_sample=False, num_beams=1, generation_config=generation_config)
+        out = model.generate(**encoded, max_new_tokens=10, do_sample=False, num_beams=1, generation_config=generation_config)
         decoded = tokenizer.batch_decode(out, skip_special_tokens=True)
 
         print(decoded)
@@ -222,7 +223,7 @@ def run_mistral(dataset, model, tokenizer):
             else:
                 temp_messages.append({'role': 'user', 'content': f'{sample} {instructions["instruction"]} '})
         encoded = tokenizer.apply_chat_template(temp_messages,return_tensors="pt", tokenize=True, add_generation_prompt=True).to('cuda')
-        out = model.generate(encoded, max_new_tokens=10, do_sample=False, pad_token_id=tokenizer.pad_token_id)
+        out = model.generate(encoded, max_new_tokens=10, do_sample=False, num_beams=1, temperature=0.0, pad_token_id=tokenizer.pad_token_id)
         decoded = tokenizer.batch_decode(out)
 
         print(decoded)
@@ -264,7 +265,7 @@ def run_zephyr(dataset, model, tokenizer):
             else:
                 temp_messages.append({'role': 'user', 'content': f'{sample} {instructions["instruction"]} '})
         encoded = tokenizer.apply_chat_template(temp_messages,return_tensors="pt", tokenize=True, add_generation_prompt=True).to('cuda')
-        out = model.generate(encoded, max_new_tokens=10, do_sample=False, pad_token_id=tokenizer.pad_token_id)
+        out = model.generate(encoded, max_new_tokens=10, do_sample=False, num_beams=1, temperature=0.0, pad_token_id=tokenizer.pad_token_id)
         decoded = tokenizer.batch_decode(out)
 
         print(decoded)
@@ -551,19 +552,37 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
 
         model = prepare_model_for_kbit_training(model)
         
-        if MODEL in 'mistral':
+        if MODEL == 'mistral':
             prompts = prepare_instruction_tuning_mistral(dataset)
             response_template = "[/INST]"
         else:
             prompts = prepare_instruction_tuning_zephyr(dataset)
             response_template = "<|assistant|>"
+            
+    all_idx = np.arange(len(prompts))
+    train_idx, val_idx = train_test_split(
+        all_idx, test_size=0.1,
+        random_state=randomness_factor_seeds['sample_order'],
+        shuffle=True
+    )
 
-    tuning_dataset = Dataset.from_dict({'prompt': prompts, 'label': dataset.train_targets})
-
-    if 'steps' in EXPERIMENT_TYPE:
-        max_steps = 150 if MODEL == 'flan-t5' else 600
-    else:
-        max_steps = -1
+    train_prompts = [prompts[i] for i in train_idx]
+    train_labels  = [dataset.train_targets[i] for i in train_idx]
+    val_prompts   = [prompts[i] for i in val_idx]
+    val_labels    = [dataset.train_targets[i] for i in val_idx]
+        
+    if MODEL == 'flan-t5':
+        steps_per_epoch_cap = 250
+        max_examples_per_epoch = steps_per_epoch_cap * 4  # batch fixo = 4
+        if len(train_prompts) > max_examples_per_epoch:
+            rng = np.random.default_rng(randomness_factor_seeds['sample_order'])
+            keep = rng.choice(len(train_prompts), size=max_examples_per_epoch, replace=False)
+            keep.sort()
+            train_prompts = [train_prompts[i] for i in keep]
+            train_labels  = [train_labels[i]  for i in keep]
+            
+    train_ds = Dataset.from_dict({'prompt': train_prompts, 'label': train_labels})
+    val_ds   = Dataset.from_dict({'prompt': val_prompts,   'label': val_labels})
 
     training_args = SFTConfig(
         output_dir=investigation_path,
@@ -571,8 +590,12 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         learning_rate=LEARNING_RATE,
         num_train_epochs=NUM_EPOCHS,
         logging_strategy="no",
-        save_strategy="no",
-        max_steps=max_steps,
+        save_strategy="epoch", 
+        eval_strategy="epoch",
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        save_total_limit=1,
+        greater_is_better=False,
         gradient_accumulation_steps=1,
         optim="paged_adamw_8bit" if MODEL in ['mistral', 'zephyr'] else 'adamw_torch',
         lr_scheduler_type="linear",
@@ -587,10 +610,12 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
     trainer = SFTTrainer(
         model=model,
         args=training_args,
-        train_dataset=tuning_dataset,
+        train_dataset=train_ds,
+        eval_dataset=val_ds,
         data_collator=collator,
         tokenizer=tokenizer,
         peft_config=peft_config if MODEL in ['mistral', 'zephyr'] else None,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=5, early_stopping_threshold=0.0)]
     )
 
     trainer.train()
@@ -687,7 +712,7 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
     loss_fn = torch.nn.CrossEntropyLoss()
     
     best_val = float('inf')
-    patience = 2
+    patience = 5
     pat = 0
 
     for epoch in range(num_epochs):
@@ -838,7 +863,7 @@ if MODEL == 'chatgpt':
 elif EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
     model_name = ICL_MODELS[f'{MODEL}_{MODEL_SIZE}']
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    tokenizer.padding_side = 'left'
+    tokenizer.padding_side = 'right'
 
 elif EXPERIMENT_TYPE in ('icl', 'prompting', 'icl_similarity'):
     model_name = ICL_MODELS[f'{MODEL}_{MODEL_SIZE}']
@@ -854,7 +879,7 @@ elif EXPERIMENT_TYPE in ('icl', 'prompting', 'icl_similarity'):
             model.resize_token_embeddings(len(tokenizer))
         generation_config = model.generation_config
         generation_config.num_beams = 1
-        generation_config.max_new_tokens = 4
+        generation_config.max_new_tokens = 10
         generation_config.do_sample = False
         generation_config.temperature = None
         model.eval()
@@ -973,5 +998,15 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
 
     with open(os.path.join(fold_path, 'results.json'), 'w') as file:
         json.dump(results, file)
+      
+    # Clean checkpoints  
+    if EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
+        try:
+            for item_name in os.listdir(fold_path):
+                item_path = os.path.join(fold_path, item_name)
+                if os.path.isdir(item_path) and item_name.startswith('checkpoint-'):
+                    shutil.rmtree(item_path)
+        except Exception as e:
+            print(f"Error while trying to remove checkpoint: {e}")
 
     fold_counter += 1
