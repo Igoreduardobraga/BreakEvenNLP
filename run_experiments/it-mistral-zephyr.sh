@@ -38,7 +38,7 @@ for DS in "${DATASETS[@]}"; do
         --dataset ${DS} \
         --model ${M} \
         --num_labelled ${N} \
-        --full_test 1 \
+        --num_labelled_test 1000 \
         --batch_size 4 \
         --num_epochs 5 \
         --lr 1e-5 \
