@@ -2,7 +2,7 @@
 set -euo pipefail
 
 DATASETS=("sst2" "boolq" "ag_news" "snips")
-MODELS=("roberta")
+MODELS=("bert" "roberta")
 
 for DS in "${DATASETS[@]}"; do
   case "$DS" in
@@ -36,7 +36,7 @@ for DS in "${DATASETS[@]}"; do
       else                    BATCH_SIZE=32
       fi
 
-      echo -e "\n======= FT BERT | dataset=${DS} | num_labelled=${N} =======\n"
+      echo -e "\n======= FT ${M} | dataset=${DS} | num_labelled=${N} =======\n"
         python3 main.py \
         --experiment_name finetuning \
         --configuration_name num_samples_${N} \
