@@ -2,7 +2,7 @@
 set -euo pipefail
 
 DATASETS=("sst2" "boolq" "ag_news" "snips")
-MODELS=("bert" "roberta")
+MODELS=("llama2" "flan-t5" "mistral" "zephyr")
 
 for DS in "${DATASETS[@]}"; do
   case "$DS" in
@@ -30,28 +30,21 @@ for DS in "${DATASETS[@]}"; do
 
   for M in "${MODELS[@]}"; do
     for N in "${SIZES[@]}"; do
-      if   (( N <= 100 ));   then BATCH_SIZE=4
-      elif (( N <= 500 ));   then BATCH_SIZE=8
-      elif (( N <= 2500 ));  then BATCH_SIZE=16
-      else                    BATCH_SIZE=32
-      fi
-
-      echo -e "\n======= FT ${M} | dataset=${DS} | num_labelled=${N} =======\n"
+      echo -e "\n======= PROMPT ${M} | dataset=${DS} | num_labelled=${N} =======\n"
         python3 main.py \
-        --experiment_name finetuning \
+        --experiment_name prompting \
         --configuration_name num_samples_${N} \
-        --experiment_type finetuning \
+        --experiment_type prompting \
+        --factor golden_model \
         --dataset ${DS} \
         --model ${M} \
+        --full_test 0 \
         --num_labelled ${N} \
-        --full_test 1 \
-        --batch_size ${BATCH_SIZE} \
-        --num_epochs 10 \
-        --lr 1e-5 \
-        --max_len 128 \
-        --factor golden_model \
+        --num_labelled_test 2000 \
+        --batch_size 32 \
+        --prompt_format 0 \
         --rskf_splits ${RSKFSPLITS} \
-        --rskf_repeats 3 \
+        --rskf_repeats 2 \
         --rskf_seed 27
     done
   done
