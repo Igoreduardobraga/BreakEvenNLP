@@ -108,7 +108,7 @@ def run_flan_t5(dataset, model, tokenizer):
         final_prompts = prepare_flan_t5_icl(dataset, data) if EXPERIMENT_TYPE == 'icl' else prepare_flan_t5_prompt(dataset, data)
         
         encoded = tokenizer(final_prompts, return_tensors='pt', padding='longest', truncation=True).to('cuda')
-        out = model.generate(**encoded, max_new_tokens=10, do_sample=False, num_beams=1, temperature=0.0)
+        out = model.generate(**encoded, max_new_tokens=10, do_sample=False, num_beams=1)
         decoded = tokenizer.batch_decode(out, skip_special_tokens=True)
 
         # print(decoded)
@@ -181,7 +181,7 @@ def run_llama2(dataset, model, tokenizer):
         out = model.generate(**encoded, max_new_tokens=10, do_sample=False, num_beams=1, generation_config=generation_config)
         decoded = tokenizer.batch_decode(out, skip_special_tokens=True)
 
-        print(decoded)
+        #print(decoded)
         decodeds.extend(decoded)
         
         predicted_labels = []
@@ -189,8 +189,8 @@ def run_llama2(dataset, model, tokenizer):
             text = text.split('[/INST]')[-1].lower()
             pred = parse_results(text, dataset.classes)
             predicted_labels.append(pred)
-        print(predicted_labels)
-        print(labels)
+        #print(predicted_labels)
+        #print(labels)
 
         predicted.extend(predicted_labels)
         golden.extend(labels)
@@ -223,18 +223,18 @@ def run_mistral(dataset, model, tokenizer):
             else:
                 temp_messages.append({'role': 'user', 'content': f'{sample} {instructions["instruction"]} '})
         encoded = tokenizer.apply_chat_template(temp_messages,return_tensors="pt", tokenize=True, add_generation_prompt=True).to('cuda')
-        out = model.generate(encoded, max_new_tokens=10, do_sample=False, num_beams=1, temperature=0.0, pad_token_id=tokenizer.pad_token_id)
+        out = model.generate(encoded, max_new_tokens=10, do_sample=False, num_beams=1, pad_token_id=tokenizer.pad_token_id)
         decoded = tokenizer.batch_decode(out)
 
-        print(decoded)
+        #print(decoded)
         
         predicted_labels = []
         for text in decoded:
             text = text.split('[/INST]')[-1]
             pred = parse_results(text, dataset.classes)
             predicted_labels.append(pred)
-        print(predicted_labels)
-        print(labels)
+        #print(predicted_labels)
+        #print(labels)
 
         predicted.extend(predicted_labels)
         golden.extend(labels)
@@ -265,18 +265,18 @@ def run_zephyr(dataset, model, tokenizer):
             else:
                 temp_messages.append({'role': 'user', 'content': f'{sample} {instructions["instruction"]} '})
         encoded = tokenizer.apply_chat_template(temp_messages,return_tensors="pt", tokenize=True, add_generation_prompt=True).to('cuda')
-        out = model.generate(encoded, max_new_tokens=10, do_sample=False, num_beams=1, temperature=0.0, pad_token_id=tokenizer.pad_token_id)
+        out = model.generate(encoded, max_new_tokens=10, do_sample=False, num_beams=1, pad_token_id=tokenizer.pad_token_id)
         decoded = tokenizer.batch_decode(out)
 
-        print(decoded)
+        #print(decoded)
         
         predicted_labels = []
         for text in decoded:
             text = text.split('<|assistant|>')[-1]
             pred = parse_results(text, dataset.classes)
             predicted_labels.append(pred)
-        print(predicted_labels)
-        print(labels)
+        #print(predicted_labels)
+        #print(labels)
 
         predicted.extend(predicted_labels)
         golden.extend(labels)
