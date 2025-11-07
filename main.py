@@ -4,6 +4,7 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausa
 from datasets import Dataset
 from data import ICLDataset, FineTuningDataset, DatasetLoader, PromptDataset, SimilarityICLDataset, InstructionTuningDataset, TextDataset, load_text_and_targets, SeededRandomSampler
 from transfer_learning.models import BERTBase, RoBERTaBase
+import re
 import random
 import pickle
 import argparse
@@ -23,23 +24,35 @@ import torch.nn.functional as F
 
 from trl import SFTTrainer, DataCollatorForCompletionOnlyLM, SFTConfig
         
+def compute_macro_f1_safe(golden, predicted, ignore_label=-1):
+    pairs = [(y, p) for y, p in zip(golden, predicted) if p != ignore_label]
+    if len(pairs) == 0:
+        print("[WARN] Todos os rótulos previstos foram ignorados (p == -1). Retornando F1=0.0")
+        return 0.0
+    y_true_f, y_pred_f = zip(*pairs)
+    return f1_score(np.array(y_true_f), np.array(y_pred_f), average='macro')
 
 def parse_results(text, classes):
-    pred = -1
-    if DATASET in ['cola', 'mrpc'] and PROMPT_FORMAT in [3]:
-        for idx, cls in enumerate(classes):
-            if (cls.lower() in text.lower()) or (str(idx) in text):
-                pred = idx
-                break
-    else:
-        for idx, cls in enumerate(classes):
-            if (cls.lower() in text.lower()) or (str(idx) in text):
-                if pred == -1:
-                    pred = idx
-                else:
-                    pred = -1
-                    break
-    return pred
+    t = text.strip().lower()
+    candidates = set()
+
+    # 1) Resposta numérica: aceita só 1..N isolado (com ou sem ')')
+    m = re.match(r'^\s*(\d{1,2})\s*\)?\s*$', t)
+    if m:
+        k = int(m.group(1)) - 1
+        if 0 <= k < len(classes):
+            candidates.add(k)
+
+    # 2) Resposta textual: nome da classe com borda de palavra
+    for idx, cls in enumerate(classes):
+        cls_pat = r'\b' + re.escape(cls.lower()) + r'\b'
+        if re.search(cls_pat, t):
+            candidates.add(idx)
+
+    # 3) Aceita somente 1 candidato; caso contrário, considera inválido
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    return -1
         
 
 def prepare_flan_t5_prompt(dataset, test_data):
@@ -622,6 +635,9 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
     if MODEL in ['mistral', 'zephyr']:
        model = trainer.model.merge_and_unload()
     model.eval()
+    
+    if MODEL in ['mistral', 'zephyr']:
+        tokenizer.padding_side = 'left'
 
     golden = {'prompting': None, 'icl': None}
     predicted = {'prompting': None, 'icl': None}
@@ -631,7 +647,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
             randomness_factor_seeds, model, tokenizer, key, investigation_path=investigation_path,
             train_test_indices=train_test_indices
         )
-        score = f1_score(np.array(golden[key]), np.array(predicted[key]), average='macro')
+        score = compute_macro_f1_safe(golden[key], predicted[key], ignore_label=-1)
         print(score)
         with open(os.path.join(investigation_path, f'{key}_results.json'), 'w') as file:
             json.dump({'real': golden[key], 'predicted': predicted[key]}, file)
@@ -873,10 +889,11 @@ elif EXPERIMENT_TYPE in ('icl', 'prompting', 'icl_similarity'):
         tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True, token=access_token)
         
         tokenizer.padding_side = 'left'
-        model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", load_in_4bit=True, token=access_token)
         if tokenizer.pad_token is None:
-            tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-            model.resize_token_embeddings(len(tokenizer))
+            tokenizer.pad_token = tokenizer.eos_token
+            
+        model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", load_in_4bit=True, token=access_token)
+        model.config.pad_token_id = tokenizer.pad_token_id
         generation_config = model.generation_config
         generation_config.num_beams = 1
         generation_config.max_new_tokens = 10
@@ -891,9 +908,9 @@ elif EXPERIMENT_TYPE in ('icl', 'prompting', 'icl_similarity'):
         model.resize_token_embeddings(len(tokenizer))
     else:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        tokenizer.padding_side = 'left'
+        tokenizer.padding_side = 'right'
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name).cuda()
-    model.eval()
+        model.eval()
 
 else:
     model_name = f'{MODEL}-{MODEL_SIZE}{"-uncased" if MODEL == "bert" else ""}'
@@ -984,9 +1001,13 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
             golden, predicted = ret
             decodeds = None
 
-    print(np.mean(np.array(golden) == np.array(predicted)))
+    invalid_rate = np.mean([p == -1 for p in predicted]) if len(predicted) else 1.0
+    print(f"[Fold {r}/{k}] invalid predictions (p==-1): {invalid_rate:.2%} "f"({sum(p==-1 for p in predicted)}/{len(predicted)})")
+    
+    f1_macro = compute_macro_f1_safe(golden, predicted, ignore_label=-1)
+    print(f1_macro)
 
-    results = copy.deepcopy(randomness_factor_seeds)
+    results = {'f1_macro': float(f1_macro), **randomness_factor_seeds}
     results['real'] = golden
     results['predicted'] = predicted
     results['base_model'] = model_name

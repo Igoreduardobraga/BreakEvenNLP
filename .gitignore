@@ -7,3 +7,4 @@ pickled/*
 __pycache__
 .venv
 result_original
+token.txt

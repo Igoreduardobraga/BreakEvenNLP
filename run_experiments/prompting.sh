@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DATASETS=("sst2" "boolq" "ag_news" "snips")
-MODELS=("llama2" "flan-t5" "mistral" "zephyr")
+DATASETS=("ag_news" "snips" "boolq" "sst2" )
+MODELS=("zephyr" "llama2" "flan-t5" "mistral")
 
 for DS in "${DATASETS[@]}"; do
   case "$DS" in
@@ -40,11 +40,11 @@ for DS in "${DATASETS[@]}"; do
         --model ${M} \
         --full_test 0 \
         --num_labelled ${N} \
-        --num_labelled_test 2000 \
-        --batch_size 32 \
+        --num_labelled_test 1000 \
+        --batch_size 8 \
         --prompt_format 0 \
         --rskf_splits ${RSKFSPLITS} \
-        --rskf_repeats 2 \
+        --rskf_repeats 1 \
         --rskf_seed 27
     done
   done

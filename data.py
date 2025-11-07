@@ -380,7 +380,7 @@ class TextDataset(Dataset):
             sentence_start = 'Sentence'
             answer_start = 'Answer'
             task_type = 'intent'
-
+            
 
         return instruction, sentence_start, answer_start, task_type
 
