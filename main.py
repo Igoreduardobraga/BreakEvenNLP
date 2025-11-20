@@ -213,12 +213,23 @@ def run_llama2(dataset, model, tokenizer, mode):
 def run_mistral(dataset, model, tokenizer, mode):
     instructions = dataset.instructions
     context_samples = dataset.context_samples
-    
+
     if PROMPT_FORMAT == 0:
-        messages_prefix = [{'role': 'user', 'content': instructions['instruction']}]
+        messages_prefix = []
         if mode == 'icl':
-            messages_prefix.append({'role': 'assistant',
-                                    'content': f'Ok, I will determine the {instructions["task_type"]} of the Sentences you will give me using only the options provided!'})
+            messages_prefix = [
+                {
+                    'role': 'user',
+                    'content': instructions['instruction']
+                },
+                {
+                    'role': 'assistant',
+                    'content': (
+                        f'Ok, I will determine the {instructions["task_type"]} '
+                        f'of the Sentences you will give me using only the options provided!'
+                    )
+                },
+            ]
             for s in context_samples:
                 messages_prefix.append({'role': 'user', 'content': s[0]})
                 messages_prefix.append({'role': 'assistant', 'content': s[1]})
@@ -226,37 +237,58 @@ def run_mistral(dataset, model, tokenizer, mode):
         messages_prefix = []
         if mode == 'icl':
             for s in context_samples:
-                messages_prefix.append({'role': 'user', 'content': f'{s[0]} {instructions["instruction"]} '})
+                messages_prefix.append({
+                    'role': 'user',
+                    'content': f'{s[0]} {instructions["instruction"]} '
+                })
                 messages_prefix.append({'role': 'assistant', 'content': s[1]})
 
-    golden, predicted = [], []
+    golden, predicted, decodeds = [], [], []
+
     for data, labels in dataset.batch_data_for_evaluation(1):
         for sample in data:
             msgs = copy.deepcopy(messages_prefix)
+
             if PROMPT_FORMAT == 0:
-                if mode == 'prompting' and len(msgs) == 1:
-                    pass
-                msgs.append({'role': 'user', 'content': sample})
+                if mode == 'prompting':
+                    msgs.append({
+                        'role': 'user',
+                        'content': f'{instructions["instruction"]}\n{sample}'
+                    })
+                else:
+                    msgs.append({'role': 'user', 'content': sample})
             else:
-                msgs.append({'role': 'user', 'content': f'{sample} {instructions["instruction"]} '})
+                msgs.append({
+                    'role': 'user',
+                    'content': f'{sample} {instructions["instruction"]} '
+                })
 
             encoded = tokenizer.apply_chat_template(
-                msgs, return_tensors="pt", tokenize=True, add_generation_prompt=True
+                msgs,
+                return_tensors="pt",
+                tokenize=True,
+                add_generation_prompt=True
             ).to('cuda')
 
             out = model.generate(
-                encoded, max_new_tokens=10, do_sample=False, num_beams=1,
+                encoded,
+                max_new_tokens=10,
+                do_sample=False,
+                num_beams=1,
                 pad_token_id=tokenizer.pad_token_id
             )
             decoded = tokenizer.batch_decode(out)
+            decodeds.extend(decoded)
 
             for text in decoded:
                 text = text.split('[/INST]')[-1]
                 pred = parse_results(text, dataset.classes)
                 predicted.append(pred)
+
             golden.extend(labels)
 
-    return golden, predicted
+    return golden, predicted, decodeds
+
 
 def run_zephyr(dataset, model, tokenizer, mode):
     instructions = dataset.instructions
