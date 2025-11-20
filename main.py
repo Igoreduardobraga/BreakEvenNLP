@@ -209,6 +209,85 @@ def run_llama2(dataset, model, tokenizer, mode):
         golden.extend(labels)
     return golden, predicted, decodeds
 
+def run_llama3(dataset, model, tokenizer, mode):
+    instructions = dataset.instructions
+    context_samples = dataset.context_samples
+
+    options_str = ", ".join([f"'{c}'" for c in dataset.classes])
+
+    system_message = {
+        "role": "system", 
+        "content": (
+            f"You are an expert classifier. Your task is to determine the {instructions['task_type']}. "
+            f"You must answer with exactly one of these options: {options_str}. "
+            f"Do not explain. Do not output the number, only the class name."
+        )
+    }
+
+    messages_prefix = [system_message]
+    
+    if mode == 'icl':
+        for s in context_samples:
+            if PROMPT_FORMAT == 0:
+                user_content = f'{instructions["sentence_start"]}: {s[0]}'
+            else:
+                user_content = f'{s[0]} {instructions["instruction"]}'
+            
+            messages_prefix.append({'role': 'user', 'content': user_content})
+            messages_prefix.append({'role': 'assistant', 'content': s[1]}) # Label textual
+
+    golden, predicted, decodeds = [], [], []
+
+    terminators = [
+        tokenizer.eos_token_id,
+        tokenizer.convert_tokens_to_ids("<|eot_id|>")
+    ]
+
+    debug_count = 0 
+
+    for data, labels in dataset.batch_data_for_evaluation(1):
+        for sample in data:
+            msgs = copy.deepcopy(messages_prefix)
+
+            if PROMPT_FORMAT == 0:
+                content = f"Text: {sample}\nBased on the text above, determine the {instructions['task_type']}. Answer:"
+            else:
+                content = f'{sample} {instructions["instruction"]} '
+            
+            msgs.append({'role': 'user', 'content': content})
+
+            prompt_str = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+            
+            inputs = tokenizer(prompt_str, return_tensors="pt", padding=True, truncation=True).to(model.device)
+
+            out = model.generate(
+                input_ids=inputs.input_ids,
+                attention_mask=inputs.attention_mask,
+                max_new_tokens=10,
+                eos_token_id=terminators,
+                pad_token_id=tokenizer.eos_token_id,
+                do_sample=False
+            )
+            
+            response_ids = out[0][inputs.input_ids.shape[-1]:]
+            decoded_text = tokenizer.decode(response_ids, skip_special_tokens=True).strip()
+            
+            decoded_clean = decoded_text.replace('.', '').replace('"', '').strip()
+
+            decodeds.append(decoded_clean)
+            
+            if debug_count < 5:
+                print(f"\n--- DEBUG [{debug_count}] ---")
+                print(f"Input: ...{str(sample)[-50:]}")
+                print(f"Output Modelo: '{decoded_clean}'")
+                debug_count += 1
+
+            pred = parse_results(decoded_clean, dataset.classes)
+            predicted.append(pred)
+            golden.extend(labels)
+
+    return golden, predicted, decodeds
+
 
 def run_mistral(dataset, model, tokenizer, mode):
     instructions = dataset.instructions
@@ -561,6 +640,35 @@ def prepare_instruction_tuning_zephyr(dataset):
 
     return final_prompts
 
+def prepare_instruction_tuning_llama3(dataset):
+    instructions = dataset.instructions
+    context_samples = dataset.context_samples
+    
+    system_header = "<|start_header_id|>system<|end_header_id|>\n\n"
+    user_header = "<|start_header_id|>user<|end_header_id|>\n\n"
+    assistant_header = "<|start_header_id|>assistant<|end_header_id|>\n\n"
+    eot = "<|eot_id|>"
+    
+    sys_msg = f"You are a helpful assistant. Follow the instruction exactly. Determine the {instructions['task_type']}."
+    
+    final_prompts = []
+    for sample in context_samples:
+        if PROMPT_FORMAT == 0:
+            user_input = f'{instructions["instruction"]}\n{instructions["sentence_start"]}: {sample[0].strip()}\n{instructions["answer_start"]}: '
+        else:
+            user_input = f'{sample[0].strip()} {instructions["instruction"]}'
+            
+        label_text = sample[1].strip()
+        
+        full_text = (
+            f"{system_header}{sys_msg}{eot}"
+            f"{user_header}{user_input}{eot}"
+            f"{assistant_header}{label_text}{eot}"
+        )
+        final_prompts.append(full_text)
+
+    return final_prompts
+
 
 def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer, investigation_path,
                                   train_test_indices=None):
@@ -581,13 +689,15 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name).cuda()
         prompts = prepare_instruction_tuning_flan_t5(dataset)
         response_template = "Answer:"
-    elif MODEL in ['mistral', 'zephyr']:
+    elif MODEL in ['mistral', 'zephyr', 'llama3']:
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_use_double_quant=True,
             bnb_4bit_quant_type="nf4",
             bnb_4bit_compute_dtype=torch.bfloat16
         )
+        
+        target_modules = ['up_proj', 'down_proj', 'gate_proj', 'k_proj', 'q_proj', 'v_proj', 'o_proj']
 
         peft_config = LoraConfig(
             r=16,
@@ -595,7 +705,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
             lora_dropout=0.05,
             bias="none",
             task_type="CAUSAL_LM",
-            target_modules=['up_proj', 'down_proj', 'gate_proj', 'k_proj', 'q_proj', 'v_proj', 'o_proj']
+            target_modules=target_modules
         )
         
         model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=bnb_config, device_map='auto')
@@ -608,9 +718,12 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         if MODEL == 'mistral':
             prompts = prepare_instruction_tuning_mistral(dataset)
             response_template = "[/INST]"
-        else:
+        elif MODEL == 'zephyr':
             prompts = prepare_instruction_tuning_zephyr(dataset)
             response_template = "<|assistant|>"
+        elif MODEL == 'llama3':
+            prompts = prepare_instruction_tuning_llama3(dataset)
+            response_template = "<|start_header_id|>assistant<|end_header_id|>\n\n"
             
     all_idx = np.arange(len(prompts))
     train_idx, val_idx = train_test_split(
@@ -850,8 +963,8 @@ parser.add_argument('--batch_size', default=64, type=int)
 parser.add_argument('--train_size', default=0.8, type=float)
 parser.add_argument('--num_labelled', default=1000, type=int)
 parser.add_argument('--num_labelled_test', default=1000, type=int)
-parser.add_argument('--model', default='flan-t5', type=str, choices=['bert', 'roberta', 'flan-t5', 'llama2', 'chatgpt', 'protonet', 'maml', 'fomaml', 'reptile', 'mistral', 'zephyr', 'lora_bert', 'lora_roberta'])
-parser.add_argument('--model_size', default='base', type=str, choices=['base'])
+parser.add_argument('--model', default='flan-t5', type=str, choices=['bert', 'roberta', 'flan-t5', 'llama2', 'chatgpt', 'protonet', 'maml', 'fomaml', 'reptile', 'mistral', 'zephyr', 'lora_bert', 'lora_roberta', 'llama3'])
+parser.add_argument('--model_size', default='base', type=str, choices=['base', '8b'])
 parser.add_argument('--lr', default=1e-5, type=float)
 parser.add_argument('--num_epochs', default=5, type=int, help='Total number of epochs to train for')
 parser.add_argument('--max_len', default=20, type=int, help='Maximal length of input for fine-tuning experiments')
@@ -874,7 +987,8 @@ ICL_MODELS = {
     'flan-t5_base': 'google/flan-t5-base',
     'llama2_base': 'meta-llama/Llama-2-13b-chat-hf',
     'mistral_base': 'mistralai/Mistral-7B-Instruct-v0.1',
-    'zephyr_base': 'HuggingFaceH4/zephyr-7b-alpha'
+    'zephyr_base': 'HuggingFaceH4/zephyr-7b-alpha',
+    'llama3_8b': 'meta-llama/Meta-Llama-3-8B-Instruct'
 }
 
 ICL_MODEL_RUN = {
@@ -883,6 +997,7 @@ ICL_MODEL_RUN = {
     'chatgpt_base': run_chatgpt,
     'mistral_base': run_mistral,
     'zephyr_base': run_zephyr,
+    'llama3_8b': run_llama3
 }
 
 EXPERIMENT_TYPE = args.experiment_type
@@ -940,12 +1055,20 @@ elif EXPERIMENT_TYPE in ('icl', 'prompting', 'icl_similarity'):
         generation_config.do_sample = False
         generation_config.temperature = None
         model.eval()
-    elif MODEL in ['mistral', 'zephyr']:
-        model = AutoModelForCausalLM.from_pretrained(model_name, load_in_4bit=True, device_map="auto")
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+    elif MODEL in ['mistral', 'zephyr', 'llama3']:
+        acess_token = None
+        if MODEL == 'llama3':
+            acess_token = os.environ['HUGGINGFACE_TOKEN']
+        model = AutoModelForCausalLM.from_pretrained(model_name, load_in_4bit=True, device_map="auto", token=acess_token)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, token=acess_token)
         tokenizer.padding_side = 'left'
-        tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-        model.resize_token_embeddings(len(tokenizer))
+        
+        if tokenizer.pad_token is None:
+            if MODEL == 'llama3':
+                tokenizer.pad_token = tokenizer.eos_token
+            else:
+                tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+                model.resize_token_embeddings(len(tokenizer))
     else:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         tokenizer.padding_side = 'right'
