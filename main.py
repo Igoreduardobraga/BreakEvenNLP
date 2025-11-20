@@ -25,10 +25,19 @@ import torch.nn.functional as F
 from trl import SFTTrainer, DataCollatorForCompletionOnlyLM, SFTConfig
         
 def compute_macro_f1_safe(golden, predicted, ignore_label=-1):
+    total_samples = len(predicted)
+    failed_preds = predicted.count(ignore_label)
+    
+    if total_samples > 0:
+        failure_rate = (failed_preds / total_samples) * 100
+        print(f"\n[METRICS LOG] Total Amostras: {total_samples} | Falhas de Parsing (-1): {failed_preds} ({failure_rate:.2f}%)")
+    
     pairs = [(y, p) for y, p in zip(golden, predicted) if p != ignore_label]
+    
     if len(pairs) == 0:
         print("[WARN] Todos os rótulos previstos foram ignorados (p == -1). Retornando F1=0.0")
         return 0.0
+    
     y_true_f, y_pred_f = zip(*pairs)
     return f1_score(np.array(y_true_f), np.array(y_pred_f), average='macro')
 
@@ -36,20 +45,20 @@ def parse_results(text, classes):
     t = text.strip().lower()
     candidates = set()
 
-    # Resposta numérica: aceita só 1..N isolado (com ou sem ')')
+    # Numeric response: try to find a number 1..N
     m = re.match(r'^\s*(\d{1,2})\s*\)?\s*$', t)
     if m:
         k = int(m.group(1)) - 1
         if 0 <= k < len(classes):
             candidates.add(k)
 
-    # Resposta textual: nome da classe com borda de palavra
+    # Textual response: try to find the name of the class
     for idx, cls in enumerate(classes):
         cls_pat = r'\b' + re.escape(cls.lower()) + r'\b'
         if re.search(cls_pat, t):
             candidates.add(idx)
 
-    # Aceita somente 1 candidato; caso contrário, considera inválido
+    # Returns the index found
     if len(candidates) == 1:
         return next(iter(candidates))
     return -1
@@ -209,6 +218,66 @@ def run_llama2(dataset, model, tokenizer, mode):
         golden.extend(labels)
     return golden, predicted, decodeds
 
+
+def run_llama2_optimized(dataset, model, tokenizer, mode):
+    instructions = dataset.instructions
+    context_samples = dataset.context_samples
+    
+    sys_msg = (
+        f"You are a helpful assistant. Your task is {instructions['task_type']}. "
+        f"Answer ONLY with one of the valid class names. Do not explain."
+    )
+    
+    # Format: <s>[INST] <<SYS>>\n{sys}\n<</SYS>>\n\n{user} [/INST]
+    prompt_history = ""
+    if mode == 'icl':
+        for s in context_samples:
+            prompt_history += f"<s>[INST] {s[0]} [/INST] {s[1]} </s>"
+
+    golden = []
+    predicted = []
+    decodeds = []
+
+    for data, labels in dataset.batch_data_for_evaluation(BATCH_SIZE):
+        batch_prompts = []
+        
+        for sample in data:
+            if PROMPT_FORMAT == 0:
+                user_query = f"{instructions['instruction']}\n\nInput: {sample}\nAnswer:"
+            else:
+                user_query = f"{sample}\n{instructions['instruction']}"
+            
+            if mode == 'icl' and len(context_samples) > 0:
+                final_prompt = f"<s>[INST] <<SYS>>\n{sys_msg}\n<</SYS>>\n\n{prompt_history}{user_query} [/INST]"
+            else:
+                final_prompt = f"<s>[INST] <<SYS>>\n{sys_msg}\n<</SYS>>\n\n{user_query} [/INST]"
+            
+            batch_prompts.append(final_prompt)
+
+        inputs = tokenizer(batch_prompts, return_tensors='pt', padding=True, truncation=True).to('cuda')
+        
+        out = model.generate(
+            **inputs, 
+            max_new_tokens=10, 
+            do_sample=False,
+            temperature=None,
+            top_p=None
+        )
+        
+        for i, generated_ids in enumerate(out):
+            input_len = inputs.input_ids[i].shape[0]
+            new_tokens = generated_ids[input_len:]
+            text = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+            
+            decodeds.append(text)
+            
+            pred = parse_results(text, dataset.classes)
+            predicted.append(pred)
+            
+        golden.extend(labels)
+        
+    return golden, predicted, decodeds
+
 def run_llama3(dataset, model, tokenizer, mode):
     instructions = dataset.instructions
     context_samples = dataset.context_samples
@@ -234,7 +303,7 @@ def run_llama3(dataset, model, tokenizer, mode):
                 user_content = f'{s[0]} {instructions["instruction"]}'
             
             messages_prefix.append({'role': 'user', 'content': user_content})
-            messages_prefix.append({'role': 'assistant', 'content': s[1]}) # Label textual
+            messages_prefix.append({'role': 'assistant', 'content': s[1]})
 
     golden, predicted, decodeds = [], [], []
 
@@ -258,7 +327,7 @@ def run_llama3(dataset, model, tokenizer, mode):
 
             prompt_str = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
             
-            inputs = tokenizer(prompt_str, return_tensors="pt", padding=True, truncation=True).to(model.device)
+            inputs = tokenizer(prompt_str, return_tensors="pt", padding=True, truncation=True).to('cuda')
 
             out = model.generate(
                 input_ids=inputs.input_ids,
@@ -293,77 +362,64 @@ def run_mistral(dataset, model, tokenizer, mode):
     instructions = dataset.instructions
     context_samples = dataset.context_samples
 
-    if PROMPT_FORMAT == 0:
-        messages_prefix = []
-        if mode == 'icl':
-            messages_prefix = [
-                {
-                    'role': 'user',
-                    'content': instructions['instruction']
-                },
-                {
-                    'role': 'assistant',
-                    'content': (
-                        f'Ok, I will determine the {instructions["task_type"]} '
-                        f'of the Sentences you will give me using only the options provided!'
-                    )
-                },
-            ]
-            for s in context_samples:
-                messages_prefix.append({'role': 'user', 'content': s[0]})
-                messages_prefix.append({'role': 'assistant', 'content': s[1]})
+    # Prefix Construction (Instructions + Examples)
+    instruction_text = f"{instructions['instruction']} Do not explain. Answer only with the class name."
+    
+    messages_prefix = []
+    
+    if mode == 'icl':
+        messages_prefix.append({'role': 'user', 'content': instruction_text})
+        messages_prefix.append({'role': 'assistant', 'content': 'Understood.'})
+
+        for s in context_samples:
+            
+            if PROMPT_FORMAT == 0:
+                content = f"{instructions['sentence_start']}: {s[0]}"
+            else:
+                content = f"{s[0]} {instructions['instruction']}"
+
+            messages_prefix.append({'role': 'user', 'content': content})
+            messages_prefix.append({'role': 'assistant', 'content': s[1]})
     else:
-        messages_prefix = []
-        if mode == 'icl':
-            for s in context_samples:
-                messages_prefix.append({
-                    'role': 'user',
-                    'content': f'{s[0]} {instructions["instruction"]} '
-                })
-                messages_prefix.append({'role': 'assistant', 'content': s[1]})
+        pass
 
     golden, predicted, decodeds = [], [], []
 
     for data, labels in dataset.batch_data_for_evaluation(1):
         for sample in data:
             msgs = copy.deepcopy(messages_prefix)
-
+            
             if PROMPT_FORMAT == 0:
                 if mode == 'prompting':
-                    msgs.append({
-                        'role': 'user',
-                        'content': f'{instructions["instruction"]}\n{sample}'
-                    })
+                     content = f"{instruction_text}\n\n{instructions['sentence_start']}: {sample}"
                 else:
-                    msgs.append({'role': 'user', 'content': sample})
+                     content = f"{instructions['sentence_start']}: {sample}"
             else:
-                msgs.append({
-                    'role': 'user',
-                    'content': f'{sample} {instructions["instruction"]} '
-                })
+                content = f"{sample} {instructions['instruction']}"
 
-            encoded = tokenizer.apply_chat_template(
-                msgs,
-                return_tensors="pt",
-                tokenize=True,
-                add_generation_prompt=True
+            msgs.append({'role': 'user', 'content': content})
+
+            inputs = tokenizer.apply_chat_template(
+                msgs, 
+                return_tensors="pt", 
+                add_generation_prompt=True,
+                tokenize=True
             ).to('cuda')
 
             out = model.generate(
-                encoded,
-                max_new_tokens=10,
+                inputs,
+                max_new_tokens=10, # Short to capture only the class name
                 do_sample=False,
-                num_beams=1,
-                pad_token_id=tokenizer.pad_token_id
+                pad_token_id=tokenizer.eos_token_id
             )
-            decoded = tokenizer.batch_decode(out)
-            decodeds.extend(decoded)
-
-            for text in decoded:
-                text = text.split('[/INST]')[-1]
-                pred = parse_results(text, dataset.classes)
-                predicted.append(pred)
-
+            
+            decoded = tokenizer.decode(out[0][inputs.shape[-1]:], skip_special_tokens=True).strip()
+            
+            decodeds.append(decoded)
+            
+            pred = parse_results(decoded, dataset.classes)
+            predicted.append(pred)
+            
             golden.extend(labels)
 
     return golden, predicted, decodeds
@@ -372,47 +428,59 @@ def run_mistral(dataset, model, tokenizer, mode):
 def run_zephyr(dataset, model, tokenizer, mode):
     instructions = dataset.instructions
     context_samples = dataset.context_samples
-    if PROMPT_FORMAT == 0:
-        messages_prefix = [{'role': 'user', 'content': instructions['instruction']}]
-        if mode == 'icl':
-            messages_prefix.append({'role': 'assistant',
-+                                    'content': f'Ok, I will determine the {instructions["task_type"]} of the Sentences you will give me using only the options provided!'})
-            for s in context_samples:
-                messages_prefix.append({'role': 'user', 'content': s[0]})
-                messages_prefix.append({'role': 'assistant', 'content': s[1]})
-    else:
-        messages_prefix = []
-        if mode == 'icl':
-            for s in context_samples:
-                messages_prefix.append({'role': 'user', 'content': f'{s[0]} {instructions["instruction"]} '})
-                messages_prefix.append({'role': 'assistant', 'content': s[1]})
+
+    instruction_text = f"{instructions['instruction']} Answer with the class name only."
+
+    messages_prefix = []
+    
+    messages_prefix.append({'role': 'system', 'content': instruction_text})
+
+    if mode == 'icl':
+        for s in context_samples:
+            if PROMPT_FORMAT == 0:
+                user_content = f"{instructions['sentence_start']}: {s[0]}"
+            else:
+                user_content = f"{s[0]} {instructions['instruction']}"
+            
+            messages_prefix.append({'role': 'user', 'content': user_content})
+            messages_prefix.append({'role': 'assistant', 'content': s[1]})
 
     golden, predicted = [], []
+    decodeds = []
+
     for data, labels in dataset.batch_data_for_evaluation(1):
         for sample in data:
             msgs = copy.deepcopy(messages_prefix)
+            
             if PROMPT_FORMAT == 0:
-                msgs.append({'role': 'user', 'content': sample})
+                content = f"{instructions['sentence_start']}: {sample}"
             else:
-                msgs.append({'role': 'user', 'content': f'{sample} {instructions["instruction"]} '})
+                content = f"{sample} {instructions['instruction']}"
+                
+            msgs.append({'role': 'user', 'content': content})
 
-            encoded = tokenizer.apply_chat_template(
-                msgs, return_tensors="pt", tokenize=True, add_generation_prompt=True
+            inputs = tokenizer.apply_chat_template(
+                msgs, 
+                return_tensors="pt", 
+                add_generation_prompt=True
             ).to('cuda')
 
             out = model.generate(
-                encoded, max_new_tokens=10, do_sample=False, num_beams=1,
-                pad_token_id=tokenizer.pad_token_id
+                inputs, 
+                max_new_tokens=10, 
+                do_sample=False, 
+                pad_token_id=tokenizer.eos_token_id
             )
-            decoded = tokenizer.batch_decode(out)
+            
+            decoded = tokenizer.decode(out[0][inputs.shape[-1]:], skip_special_tokens=True).strip()
+            decodeds.append(decoded)
 
-            for text in decoded:
-                text = text.split('<|assistant|>')[-1]
-                pred = parse_results(text, dataset.classes)
-                predicted.append(pred)
+            pred = parse_results(decoded, dataset.classes)
+            predicted.append(pred)
+            
             golden.extend(labels)
 
-    return golden, predicted
+    return golden, predicted, decodeds
 
 
 def prepare_chatgpt_prompt(dataset, test_data):
@@ -604,39 +672,41 @@ def prepare_instruction_tuning_flan_t5(dataset):
 def prepare_instruction_tuning_mistral(dataset):
     instructions = dataset.instructions
     context_samples = dataset.context_samples
-    if PROMPT_FORMAT == 0:
-        prompt = f'<s> [INST] {instructions["instruction"]}\n'
-    else:
-        prompt = '<s> [INST] '
-
+    
+    instruction_text = instructions["instruction"]
+    
     final_prompts = []
     for sample in context_samples:
-        new_prompt = copy.deepcopy(prompt)
+        
         if PROMPT_FORMAT == 0:
-            new_prompt += f'{sample[0].strip()} [/INST] {sample[1].strip()}</s>'
+            user_text = f"{instruction_text}\n{instructions['sentence_start']}: {sample[0].strip()}"
         else:
-            new_prompt += f'{sample[0].strip()} {instructions["instruction"]} [/INST] {sample[1].strip()}</s>'
-        final_prompts.append(new_prompt)
+            user_text = f"{sample[0].strip()} {instruction_text}"
+
+        full_text = f"<s>[INST] {user_text} [/INST] {sample[1].strip()}</s>"
+        final_prompts.append(full_text)
 
     return final_prompts
-
 
 def prepare_instruction_tuning_zephyr(dataset):
     instructions = dataset.instructions
     context_samples = dataset.context_samples
-    if PROMPT_FORMAT == 0:
-        prompt = f'<|user|> {instructions["instruction"]}\n'
-    else:
-        prompt = '<|user|> '
+    
+    instruction_text = instructions["instruction"]
 
     final_prompts = []
     for sample in context_samples:
-        new_prompt = copy.deepcopy(prompt)
         if PROMPT_FORMAT == 0:
-            new_prompt += f'{sample[0].strip()} </s> <|assistant|> {sample[1].strip()}</s>'
+            user_text = f"{instructions['sentence_start']}: {sample[0].strip()}"
         else:
-            new_prompt += f'{sample[0].strip()} {instructions["instruction"]} </s> <|assistant|> {sample[1].strip()}</s>'
-        final_prompts.append(new_prompt)
+            user_text = f"{sample[0].strip()} {instructions['instruction']}"
+
+        full_text = (
+            f"<|system|>\n{instruction_text}</s>\n"
+            f"<|user|>\n{user_text}</s>\n"
+            f"<|assistant|>\n{sample[1].strip()}</s>"
+        )
+        final_prompts.append(full_text)
 
     return final_prompts
 
@@ -993,7 +1063,7 @@ ICL_MODELS = {
 
 ICL_MODEL_RUN = {
     'flan-t5_base': run_flan_t5,
-    'llama2_base': run_llama2,
+    'llama2_base': run_llama2_optimized,
     'chatgpt_base': run_chatgpt,
     'mistral_base': run_mistral,
     'zephyr_base': run_zephyr,
@@ -1023,9 +1093,9 @@ RESULTS_PATH = os.path.join('results', f'{args.experiment_name}', f'{EXPERIMENT_
 if not os.path.exists(RESULTS_PATH):
     os.makedirs(RESULTS_PATH)
 
-BATCH_SIZE = args.batch_size # 64
-NUM_EPOCHS = args.num_epochs # 5
-LEARNING_RATE = args.lr # 1e-5
+BATCH_SIZE = args.batch_size
+NUM_EPOCHS = args.num_epochs
+LEARNING_RATE = args.lr
 
 
 if MODEL == 'chatgpt':
@@ -1056,11 +1126,11 @@ elif EXPERIMENT_TYPE in ('icl', 'prompting', 'icl_similarity'):
         generation_config.temperature = None
         model.eval()
     elif MODEL in ['mistral', 'zephyr', 'llama3']:
-        acess_token = None
+        access_token = None
         if MODEL == 'llama3':
-            acess_token = os.environ['HUGGINGFACE_TOKEN']
-        model = AutoModelForCausalLM.from_pretrained(model_name, load_in_4bit=True, device_map="auto", token=acess_token)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, token=acess_token)
+            access_token = os.environ['HUGGINGFACE_TOKEN']
+        model = AutoModelForCausalLM.from_pretrained(model_name, load_in_4bit=True, device_map="auto", token=access_token)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, token=access_token)
         tokenizer.padding_side = 'left'
         
         if tokenizer.pad_token is None:

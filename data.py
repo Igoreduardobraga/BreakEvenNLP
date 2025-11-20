@@ -296,93 +296,50 @@ class TextDataset(Dataset):
             torch.set_rng_state(old_state)
 
     def prepare_dataset_keywords(self):
-        options = ''
-        for idx, text in enumerate(self.classes):
-            options += f' {idx + 1}) {text}'
+        options_str = ", ".join([f"'{c}'" for c in self.classes])
 
         prompt = self.prompt_format
+        
+        sentence_start = 'Text'
+        answer_start = 'Answer'
+        task_type = 'classification'
 
         if self.dataset_name == 'sst2':
-            if prompt == 0:
-                instruction = f'Determine sentiment of the sentence using following options:{options}'
-            elif prompt == 1:
-                instruction = 'Sentiment?'
-            elif prompt == 2:
-                instruction = 'Sentiment is'
-            elif prompt == 3:
-                instruction = 'It was'
-            else:
-                raise NotImplementedError()
-            sentence_start = 'Sentence'
-            answer_start = 'Answer'
-            task_type = 'sentiment'
-        elif self.dataset_name == 'cola':
-            if prompt == 0:
-                instruction = f'Determine grammatical acceptability of the Sentence using following options:{options}'
-            elif prompt == 1:
-                instruction = 'Grammatically acceptable?'
-            elif prompt == 2:
-                instruction = 'Grammar problems?'
-            elif prompt == 3:
-                instruction = 'It is'
-            else:
-                raise NotImplementedError()
-            sentence_start = 'Sentence'
-            answer_start = 'Answer'
-            task_type = 'grammatical acceptability'
-        elif self.dataset_name == 'mrpc':
-            if prompt == 0:
-                instruction = f'Determine whether the Sentence Pair is semantically equivalent using following options:{options}'
-            elif prompt == 1:
-                instruction = 'Semantically equivalent sentences?'
-            elif prompt == 2:
-                instruction = 'Semantically different sentences?'
-            elif prompt == 3:
-                instruction = 'Sentences are'
-            else:
-                raise NotImplementedError()
-            sentence_start = 'Sentence Pair'
-            answer_start = 'Answer'
-            task_type = 'semantical equivalence'
-        elif self.dataset_name == 'rte':
-            instruction = f'Determine whether the Premise entails the Hypothesis using following options:{options}'
-            sentence_start = ''
-            answer_start = 'Answer'
-            task_type = 'entailment'
-        elif self.dataset_name == 'boolq':
-            instruction = f'Answer the question based on the passage using following options:{options}'
-            sentence_start = ''
-            answer_start = 'Answer'
-            task_type = 'question answering'
-        elif self.dataset_name in ['trec', 'ag_news', 'db_pedia']:
-            if prompt == 0:
-                instruction = f'Determine topic of the sentence using following options:{options}'
-            elif prompt == 1:
-                instruction = 'Topic?'
-            elif prompt == 2:
-                instruction = 'Topic is'
-            elif prompt == 3:
-                instruction = 'This is about'
-            else:
-                raise NotImplementedError()
-            sentence_start = 'Sentence'
-            answer_start = 'Answer'
-            task_type = 'topic'
-        elif self.dataset_name == 'snips':
-            if prompt == 0:
-                instruction = f'Determine intent of the sentence using following options:{options}'
-            elif prompt == 1:
-                instruction = 'Intent?'
-            elif prompt == 2:
-                instruction = 'Intent is'
-            elif prompt == 3:
-                instruction = 'User requested'
-            else:
-                raise NotImplementedError()
-            sentence_start = 'Sentence'
-            answer_start = 'Answer'
-            task_type = 'intent'
+            instruction = f'Analyze the sentiment of the text. Options: {options_str}.'
+            task_type = 'sentiment analysis'
             
+        elif self.dataset_name == 'cola':
+            instruction = f'Determine if the sentence is grammatically acceptable. Options: {options_str}.'
+            task_type = 'grammatical acceptability'
+            
+        elif self.dataset_name == 'mrpc':
+            instruction = f'Determine if the two sentences are semantically equivalent. Options: {options_str}.'
+            sentence_start = 'Sentences'
+            task_type = 'semantic equivalence'
+            
+        elif self.dataset_name == 'boolq':
+            instruction = f'Read the passage and answer the question with Yes or No.'
+            sentence_start = ''
+            task_type = 'question answering'
+            
+        elif self.dataset_name == 'ag_news':
+            instruction = f'Classify the news article into one of these topics: {options_str}.'
+            task_type = 'news classification'
+            
+        elif self.dataset_name == 'trec':
+            instruction = f'Classify the question type: {options_str}.'
+            task_type = 'question classification'
+            
+        elif self.dataset_name == 'snips':
+            instruction = f'Identify the intent of the user command. Options: {options_str}.'
+            task_type = 'intent detection'
+            
+        elif self.dataset_name == 'db_pedia':
+            instruction = f'Classify the topic of the text: {options_str}.'
+            task_type = 'topic classification'
+
+        else:
+             instruction = f'Classify the text using these options: {options_str}.'
 
         return instruction, sentence_start, answer_start, task_type
 
