@@ -107,10 +107,12 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
         dataset = load_dataset('super_glue', 'boolq')
         data = pd.concat([pd.DataFrame(dataset['train']),
                           pd.DataFrame(dataset['validation'])])
+        
         texts = [
-            f"Question: {q}\nPassage: {passage}"
+            f"Passage: {passage}\nQuestion: {q}" 
             for q, passage in zip(data['question'].tolist(), data['passage'].tolist())
         ]
+        
         classes = ['No', 'Yes']
         targets = data['label'].tolist()
         return tuple(texts), tuple(targets), tuple(classes)
@@ -348,10 +350,10 @@ class TextDataset(Dataset):
             answer_start = 'Answer'
             task_type = 'entailment'
         elif self.dataset_name == 'boolq':
-            instruction = f'Determine whether the Passage contains Answer to the Question using following options:{options}'
+            instruction = f'Answer the question based on the passage using following options:{options}'
             sentence_start = ''
             answer_start = 'Answer'
-            task_type = 'presence'
+            task_type = 'question answering'
         elif self.dataset_name in ['trec', 'ag_news', 'db_pedia']:
             if prompt == 0:
                 instruction = f'Determine topic of the sentence using following options:{options}'
