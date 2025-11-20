@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DATASETS=("ag_news" "snips" "boolq" "sst2" )
-MODELS=("llama2" "zephyr" "flan-t5" "mistral")
+DATASETS=("sst2" "boolq" "ag_news" "snips")
 
 for DS in "${DATASETS[@]}"; do
   case "$DS" in
@@ -28,24 +27,23 @@ for DS in "${DATASETS[@]}"; do
       ;;
   esac
 
-  for M in "${MODELS[@]}"; do
     for N in "${SIZES[@]}"; do
-      echo -e "\n======= PROMPT ${M} | dataset=${DS} | num_labelled=${N} =======\n"
+        echo -e "\n======= ICL llama3 | dataset=${DS} | num_labelled=${N} =======\n"
         python3 main.py \
-        --experiment_name prompting \
+        --experiment_name icl \
         --configuration_name num_samples_${N} \
-        --experiment_type prompting \
-        --factor golden_model \
+        --experiment_type icl \
         --dataset ${DS} \
-        --model ${M} \
-        --full_test 0 \
+        --model llama3 \
+        --model_size 8b \
         --num_labelled ${N} \
+        --full_test 0 \
         --num_labelled_test 1000 \
-        --batch_size 8 \
-        --prompt_format 0 \
+        --num_shots 5 \
+        --batch_size 2 \
+        --factor golden_model \
         --rskf_splits ${RSKFSPLITS} \
         --rskf_repeats 1 \
         --rskf_seed 27
     done
-  done
 done
