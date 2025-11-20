@@ -2,7 +2,7 @@
 set -euo pipefail
 
 DATASETS=("ag_news" "snips" "boolq" "sst2" )
-MODELS=("llama2" "zephyr" "flan-t5" "mistral")
+MODELS=("mistral" "llama2" "zephyr" "flan-t5")
 
 for DS in "${DATASETS[@]}"; do
   case "$DS" in
@@ -29,23 +29,21 @@ for DS in "${DATASETS[@]}"; do
   esac
 
   for M in "${MODELS[@]}"; do
-    for N in "${SIZES[@]}"; do
-      echo -e "\n======= PROMPT ${M} | dataset=${DS} | num_labelled=${N} =======\n"
-        python3 main.py \
-        --experiment_name prompting \
-        --configuration_name num_samples_${N} \
-        --experiment_type prompting \
-        --factor golden_model \
-        --dataset ${DS} \
-        --model ${M} \
-        --full_test 0 \
-        --num_labelled ${N} \
-        --num_labelled_test 1000 \
-        --batch_size 8 \
-        --prompt_format 0 \
-        --rskf_splits ${RSKFSPLITS} \
-        --rskf_repeats 1 \
-        --rskf_seed 27
-    done
+    echo -e "\n======= PROMPT ${M} | dataset=${DS} | num_labelled (Single run) =======\n"
+      python3 main.py \
+      --experiment_name prompting \
+      --configuration_name num_samples_1000 \
+      --experiment_type prompting \
+      --factor golden_model \
+      --dataset ${DS} \
+      --model ${M} \
+      --full_test 0 \
+      --num_labelled 1000 \
+      --num_labelled_test 1000 \
+      --batch_size 8 \
+      --prompt_format 0 \
+      --rskf_splits ${RSKFSPLITS} \
+      --rskf_repeats 1 \
+      --rskf_seed 27
   done
 done
