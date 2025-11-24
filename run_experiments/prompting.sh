@@ -2,7 +2,7 @@
 set -euo pipefail
 
 DATASETS=("ag_news" "snips" "boolq" "sst2" )
-MODELS=("mistral" "llama2" "zephyr" "flan-t5")
+MODELS=("llama2" "mistral" "zephyr" "flan-t5")
 
 for DS in "${DATASETS[@]}"; do
   case "$DS" in
