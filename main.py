@@ -23,23 +23,6 @@ import torch.nn.functional as F
 
 
 from trl import SFTTrainer, DataCollatorForCompletionOnlyLM, SFTConfig
-        
-def compute_macro_f1_safe(golden, predicted, ignore_label=-1):
-    total_samples = len(predicted)
-    failed_preds = predicted.count(ignore_label)
-    
-    if total_samples > 0:
-        failure_rate = (failed_preds / total_samples) * 100
-        print(f"\n[METRICS LOG] Total Amostras: {total_samples} | Falhas de Parsing (-1): {failed_preds} ({failure_rate:.2f}%)")
-    
-    pairs = [(y, p) for y, p in zip(golden, predicted) if p != ignore_label]
-    
-    if len(pairs) == 0:
-        print("[WARN] Todos os rótulos previstos foram ignorados (p == -1). Retornando F1=0.0")
-        return 0.0
-    
-    y_true_f, y_pred_f = zip(*pairs)
-    return f1_score(np.array(y_true_f), np.array(y_pred_f), average='macro')
 
 def parse_results(text, classes):
     t = text.strip().lower()
@@ -62,7 +45,6 @@ def parse_results(text, classes):
     if len(candidates) == 1:
         return next(iter(candidates))
     return -1
-        
 
 def prepare_flan_t5_prompt(dataset, test_data):
     instructions = dataset.instructions
@@ -133,15 +115,12 @@ def run_flan_t5(dataset, model, tokenizer, mode):
         out = model.generate(**encoded, max_new_tokens=10, do_sample=False, num_beams=1)
         decoded = tokenizer.batch_decode(out, skip_special_tokens=True)
 
-        # print(decoded)
         decodeds.extend(decoded)
         
         predicted_labels = []
         for text in decoded:
             pred = parse_results(text, dataset.classes)
             predicted_labels.append(pred)
-        # print(predicted_labels)
-        # print(labels)
 
         predicted.extend(predicted_labels)
         golden.extend(labels)
@@ -203,7 +182,6 @@ def run_llama2(dataset, model, tokenizer, mode):
         out = model.generate(**encoded, max_new_tokens=10, do_sample=False, num_beams=1, generation_config=generation_config)
         decoded = tokenizer.batch_decode(out, skip_special_tokens=True)
 
-        #print(decoded)
         decodeds.extend(decoded)
         
         predicted_labels = []
@@ -211,8 +189,6 @@ def run_llama2(dataset, model, tokenizer, mode):
             text = text.split('[/INST]')[-1].lower()
             pred = parse_results(text, dataset.classes)
             predicted_labels.append(pred)
-        #print(predicted_labels)
-        #print(labels)
 
         predicted.extend(predicted_labels)
         golden.extend(labels)
@@ -870,7 +846,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
             randomness_factor_seeds, model, tokenizer, key, investigation_path=investigation_path,
             train_test_indices=train_test_indices
         )
-        score = compute_macro_f1_safe(golden[key], predicted[key], ignore_label=-1)
+        score = compute_macro_f1(golden[key], predicted[key], failed_label=-1)
         print(score)
         with open(os.path.join(investigation_path, f'{key}_results.json'), 'w') as file:
             json.dump({'real': golden[key], 'predicted': predicted[key]}, file)
@@ -1015,7 +991,27 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
             golden.extend(targets.tolist())
     return golden, predictions
 
-
+def compute_macro_f1(golden, predicted, failed_label=-1):
+    total_samples = len(predicted)
+    failed_preds = predicted.count(failed_label)
+    
+    if total_samples > 0:
+        failure_rate = (failed_preds / total_samples) * 100
+        print(f"\n[METRICS LOG] Total Amostras: {total_samples} | Falhas de Parsing (-1): {failed_preds} ({failure_rate:.2f}%)")
+    
+    y_true = np.array(golden)
+    y_pred = np.array(predicted)
+    valid_labels = np.unique(y_true)
+    
+    score = f1_score(
+        y_true=y_true, 
+        y_pred=y_pred, 
+        average='macro', 
+        labels=valid_labels,
+        zero_division=0
+    )
+    
+    return score
 
 parser = argparse.ArgumentParser()
 # Meta
@@ -1218,8 +1214,8 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
         golden, predicted, decodeds = instruction_tuning_experiment(
             randomness_factor_seeds, model_name, tokenizer, fold_path, train_test_indices=(train_idx, test_idx)
         )
-        f1_prompting = compute_macro_f1_safe(golden['prompting'], predicted['prompting'], ignore_label=-1)
-        f1_icl       = compute_macro_f1_safe(golden['icl'],       predicted['icl'],       ignore_label=-1)
+        f1_prompting = compute_macro_f1(golden['prompting'], predicted['prompting'], failed_label=-1)
+        f1_icl       = compute_macro_f1(golden['icl'],       predicted['icl'],       failed_label=-1)
     elif MODEL == 'chatgpt':
         golden, predicted, decodeds = prompt_icl_experiment(
             randomness_factor_seeds, None, None, EXPERIMENT_TYPE, investigation_path=fold_path,
@@ -1237,7 +1233,7 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
             decodeds = None
     
     if(EXPERIMENT_TYPE not in ['instruction_tuning', 'instruction_tuning_steps']):
-        f1_macro = compute_macro_f1_safe(golden, predicted, ignore_label=-1)
+        f1_macro = compute_macro_f1(golden, predicted, failed_label=-1)
         print(f1_macro)
         results = {'f1_macro': float(f1_macro), **randomness_factor_seeds}
     else:
