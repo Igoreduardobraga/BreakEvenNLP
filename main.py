@@ -24,6 +24,28 @@ import torch.nn.functional as F
 
 from trl import SFTTrainer, DataCollatorForCompletionOnlyLM, SFTConfig
 
+def compute_macro_f1(golden, predicted, failed_label=-1):
+    total_samples = len(predicted)
+    failed_preds = predicted.count(failed_label)
+    
+    if total_samples > 0:
+        failure_rate = (failed_preds / total_samples) * 100
+        print(f"\n[METRICS LOG] Total Amostras: {total_samples} | Falhas de Parsing (-1): {failed_preds} ({failure_rate:.2f}%)")
+    
+    y_true = np.array(golden)
+    y_pred = np.array(predicted)
+    valid_labels = np.unique(y_true)
+    
+    score = f1_score(
+        y_true=y_true, 
+        y_pred=y_pred, 
+        average='macro', 
+        labels=valid_labels,
+        zero_division=0
+    )
+    
+    return score
+
 def parse_results(text, classes):
     t = text.strip().lower()
     candidates = set()
@@ -990,28 +1012,6 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
             predictions.extend(predicted.tolist())
             golden.extend(targets.tolist())
     return golden, predictions
-
-def compute_macro_f1(golden, predicted, failed_label=-1):
-    total_samples = len(predicted)
-    failed_preds = predicted.count(failed_label)
-    
-    if total_samples > 0:
-        failure_rate = (failed_preds / total_samples) * 100
-        print(f"\n[METRICS LOG] Total Amostras: {total_samples} | Falhas de Parsing (-1): {failed_preds} ({failure_rate:.2f}%)")
-    
-    y_true = np.array(golden)
-    y_pred = np.array(predicted)
-    valid_labels = np.unique(y_true)
-    
-    score = f1_score(
-        y_true=y_true, 
-        y_pred=y_pred, 
-        average='macro', 
-        labels=valid_labels,
-        zero_division=0
-    )
-    
-    return score
 
 parser = argparse.ArgumentParser()
 # Meta
