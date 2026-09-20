@@ -37,12 +37,11 @@ class SeededRandomSampler(RandomSampler):
         self.stream = RNGStream(seed=seed)
         self.state = self.stream._state
         self.replacement = replacement
-        self.num_samples = num_samples
         self.dataset = dataset
         try:
             super(SeededRandomSampler, self).__init__(dataset, replacement=replacement, num_samples=num_samples)
         except Exception:
-            pass
+            self._num_samples = num_samples
 
     def __iter__(self):
         size = len(self.dataset)

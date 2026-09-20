@@ -76,12 +76,13 @@ class TestRNGController(unittest.TestCase):
     def test_defensive_cuda_handling(self):
         from rng import RNGController
 
-        rng = RNGController()
-        # Ensure capture and restore don't crash when cuda is not available
-        snapshot = rng.capture_state()
-        self.assertIsNone(snapshot.cuda_state)
-        # Should not throw
-        snapshot.restore()
+        with patch("torch.cuda.is_available", return_value=False):
+            rng = RNGController()
+            # Ensure capture and restore don't crash when cuda is not available
+            snapshot = rng.capture_state()
+            self.assertIsNone(snapshot.cuda_state)
+            # Should not throw
+            snapshot.restore()
 
     def test_rng_stream_pause_and_resume(self):
         from rng import RNGStream

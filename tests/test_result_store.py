@@ -186,16 +186,17 @@ class TestResultStore(unittest.TestCase):
 
     def test_fallback_to_csv_when_parquet_engine_missing(self):
         """Verifies that storage_format='parquet' falls back to csv if pyarrow is unavailable."""
+        from unittest.mock import patch
+        import sys
         from result_store import ResultStore
 
-        store = ResultStore(
-            results_path=self.test_dir,
-            storage_format="parquet",
-            **self.exp_meta
-        )
-
-        # In an environment without pyarrow, summary_file should fall back to summary.csv
-        self.assertEqual(store.summary_file.name, "summary.csv")
+        with patch.dict(sys.modules, {"pyarrow": None}):
+            store = ResultStore(
+                results_path=self.test_dir,
+                storage_format="parquet",
+                **self.exp_meta
+            )
+            self.assertEqual(store.summary_file.name, "summary.csv")
 
     def test_parquet_atomic_write_with_mock(self):
         """Verifies parquet branch execution when pyarrow and pandas are available."""

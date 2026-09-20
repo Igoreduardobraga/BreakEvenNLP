@@ -7,3 +7,5 @@ __pycache__
 .venv
 result_original
 token.txt
+.venv/
+.pytest_cache/

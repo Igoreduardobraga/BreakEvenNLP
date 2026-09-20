@@ -1,0 +1,40 @@
+[project]
+name = "breakeven-nlp"
+version = "0.1.0"
+description = ""
+readme = "README.md"
+authors = [
+    { name = "Igoreduardobraga", email = "igoredubraga@gmail.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "accelerate==1.10.1",
+    "bitsandbytes==0.47.0",
+    "datasets==3.6.0",
+    "langdetect==1.0.9",
+    "matplotlib==3.10.6",
+    "numpy==1.26.4",
+    "pandas==2.3.3",
+    "peft==0.17.1",
+    "pyarrow>=25.0.1",
+    "requests==2.32.5",
+    "scikit-learn==1.7.2",
+    "scipy>=1.13.0,<1.15",
+    "seaborn==0.13.2",
+    "sentencepiece==0.2.1",
+    "tokenizers==0.22.1",
+    "tqdm==4.67.1",
+    "transformers==4.56.2",
+    "trl==0.9.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.uv]                                                                                                                                                                                      
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
