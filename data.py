@@ -5,6 +5,7 @@ import copy
 import os
 import pickle
 import math
+import warnings
 import numpy as np
 from datasets import load_dataset
 from sklearn.metrics.pairwise import cosine_similarity
@@ -13,6 +14,7 @@ import pandas as pd
 from torch.utils.data import RandomSampler, DataLoader, Dataset
 from transformers import BertModel, BertTokenizer
 from functools import lru_cache
+from sample_pool import SamplePool
 
 class SeededRandomSampler(RandomSampler):
 
@@ -171,16 +173,30 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
         raise NotImplementedError(f'The dataset "{dataset_name}" is not supported in this function')
 
 class DatasetLoader():
+    """
+    DataLoader wrapper managing train and test loaders.
+    Delegates to SamplePool's to_torch_dataset when available, avoiding deepcopy
+    and mutable state flags.
+    """
 
     def __init__(self, name, batch_size, dataset, shuffle_train_seed=0):
         self.name = name
         self.batch_size = batch_size
         self.shuffle_train_seed = shuffle_train_seed
-        self.train_dataset = copy.deepcopy(dataset)
-        self.train_dataset.train = True
+        self.dataset = dataset
 
-        self.test_dataset = copy.deepcopy(dataset)
-        self.test_dataset.train = False
+        if hasattr(dataset, 'pool') and hasattr(dataset.pool, 'to_torch_dataset') and not hasattr(dataset, 'train_data'):
+            self.train_dataset = dataset.pool.to_torch_dataset(split='train')
+            self.test_dataset = dataset.pool.to_torch_dataset(split='test')
+        elif hasattr(dataset, 'train'):
+            # Shallow copy to isolate train/test mode for legacy datasets like FineTuningDataset
+            self.train_dataset = copy.copy(dataset)
+            self.train_dataset.train = True
+            self.test_dataset = copy.copy(dataset)
+            self.test_dataset.train = False
+        else:
+            self.train_dataset = dataset
+            self.test_dataset = dataset
 
     def trainloader(self):
         sampler = SeededRandomSampler(self.train_dataset, seed=self.shuffle_train_seed)
@@ -188,11 +204,14 @@ class DatasetLoader():
         return trainloader
 
     def testloader(self):
-        testloader = DataLoader(self.test_dataset, batch_size = 64, shuffle=False, pin_memory=True)
+        testloader = DataLoader(self.test_dataset, batch_size=64, shuffle=False, pin_memory=True)
         return testloader
 
 
 class TextDataset(Dataset):
+    """
+    Backward-compatibility wrapper delegating data management to SamplePool.
+    """
 
     def __init__(self, dataset_name, train_size=0.8, num_labelled=1000, num_labelled_test=1000,
                  label_seed=0, device=None, full_test=True, prompt_format=0,
@@ -211,89 +230,39 @@ class TextDataset(Dataset):
         self.device = device
         self.prompt_format = prompt_format
 
-        t, y, c = load_text_and_targets(self.dataset_name, self.prompt_format)
-        self.text, self.targets, self.classes = list(t), list(y), list(c)
-        self.num_classes = len(self.classes)
+        self.pool = SamplePool.from_dataset_name(
+            dataset_name=self.dataset_name,
+            prompt_format=self.prompt_format,
+            train_test_indices=train_test_indices,
+            num_labelled=self.num_labelled,
+            num_labelled_test=self.num_labelled_test,
+            label_seed=self.label_seed,
+            full_test=self.full_test
+        )
+        self._sync_with_pool()
 
-        self.split_train_test(train_test_indices=train_test_indices)
-        self.select_labelled_data()
+    def _sync_with_pool(self):
+        self.text = self.pool.text
+        self.targets = self.pool.targets
+        self.classes = self.pool.classes
+        self.num_classes = self.pool.num_classes
 
+        self.train_indices = self.pool.train_indices
+        self.test_indices = self.pool.test_indices
+        self.train_text = self.pool.train_text
+        self.train_targets = self.pool.train_targets
+        self.test_text = self.pool.test_text
+        self.test_targets = self.pool.test_targets
 
     def split_train_test(self, train_test_indices=None):
         if train_test_indices is None:
             raise ValueError("train_test_indices must be provided when using external KFold.")
-        else:
-            self.train_indices, self.test_indices = train_test_indices
-
-        self.train_text = [self.text[idx] for idx in self.train_indices]
-        self.train_targets = [self.targets[idx] for idx in self.train_indices]
-
-        self.test_text = [self.text[idx] for idx in self.test_indices]
-        self.test_targets = [self.targets[idx] for idx in self.test_indices] 
-        
-
+        self.pool = self.pool.with_split(train_test_indices)
+        self._sync_with_pool()
 
     def select_labelled_data(self):
-        if self.num_labelled > 0:
-
-            old_state = torch.get_rng_state()
-            torch.manual_seed(self.label_seed)
-
-            to_select = math.ceil(self.num_labelled / self.num_classes)
-
-            targets = np.array(self.train_targets)
-
-            texts = []
-            labels = []
-            train_indices = []
-            for cls in range(self.num_classes):
-                inds = np.argwhere(targets == cls).reshape(-1)
-                indices = torch.randperm(len(inds))
-                inds = inds[indices]
-                inds = inds[:to_select]
-                train_indices.extend(inds)
-                for idx in inds:
-                    texts.append(self.train_text[idx])
-                    labels.append(self.train_targets[idx])
-            indices = torch.randperm(len(labels))
-            self.train_text = [texts[idx] for idx in indices]
-            self.train_targets = [labels[idx] for idx in indices]
-            self.train_indices = train_indices
-
-            print(f'Number of selected Train samples: {len(self.train_targets)}')
-
-            torch.set_rng_state(old_state)
-        
-        if not self.full_test and self.num_labelled_test > 0:
-
-            old_state = torch.get_rng_state()
-            torch.manual_seed(self.label_seed)
-
-            to_select = math.ceil(self.num_labelled_test / self.num_classes)
-
-            targets = np.array(self.test_targets)
-
-            texts = []
-            labels = []
-            test_indices = []
-            for cls in range(self.num_classes):
-                inds = np.argwhere(targets == cls).reshape(-1)
-                indices = torch.randperm(len(inds))
-                inds = inds[indices]
-                inds = inds[:to_select]
-                test_indices.extend(inds)
-                for idx in inds:
-                    texts.append(self.test_text[idx])
-                    labels.append(self.test_targets[idx])
-            indices = torch.randperm(len(labels))
-            self.test_text = [texts[idx] for idx in indices]
-            self.test_targets = [labels[idx] for idx in indices]
-            self.test_indices = test_indices
-            print(len(self.test_text))
-
-            print(f'Number of selected Test samples: {len(self.test_targets)}')
-
-            torch.set_rng_state(old_state)
+        # Delegated to SamplePool during initialization
+        pass
 
     def prepare_dataset_keywords(self):
         from prompter import PromptFormatter
@@ -301,8 +270,19 @@ class TextDataset(Dataset):
         info = formatter.get_task_info(self.dataset_name, classes=self.classes)
         return info["instruction"], info["sentence_start"], info["answer_start"], info["task_type"]
 
+    def __len__(self):
+        return len(self.train_targets) if self.train else len(self.test_targets)
+
+    def __getitem__(self, index):
+        if self.train:
+            return self.train_text[index], self.train_targets[index]
+        return self.test_text[index], self.test_targets[index]
+
 
 class ICLDataset(TextDataset):
+    """
+    In-context learning dataset wrapper delegating shot selection and batching to SamplePool.
+    """
 
     def __init__(self, dataset_name, train_size=0.8, num_labelled=1000, num_labelled_test=1000,
                  label_seed=0, device=None, full_test=True, num_shots=2,
@@ -317,68 +297,7 @@ class ICLDataset(TextDataset):
         self.model_name = model_name
         self.instructions, self.context_samples = self.prepare_dataset_for_use()
 
-
     def prepare_dataset_for_use(self):
-        texts, targets = self.__choose_shots()
-        texts, targets = self.__sample_reorder(texts, targets)
-        instructions, context_samples = self.__prepare_prompt(texts, targets)
-        return instructions, context_samples
-
-    
-    def batch_data_for_evaluation(self, batch=64):
-        start_idx = 0
-        end_idx = batch
-
-        while start_idx < len(self.test_text):
-            data = self.test_text[start_idx : end_idx]
-            labels = self.test_targets[start_idx : end_idx]
-
-            yield data, labels
-
-            start_idx = end_idx
-            end_idx += batch
-
-
-    def __len__(self):
-        return len(self.test_text)
-    
-
-    def __choose_shots(self):
-        to_choose = int(self.num_shots)
-        
-        old_state = torch.get_rng_state()
-        torch.manual_seed(self.choice_seed)
-
-        targets = np.array(self.train_targets)
-
-        texts = []
-        labels = []
-        for cls in range(self.num_classes):
-            inds = np.argwhere(targets == cls).reshape(-1)
-            indices = torch.randperm(len(inds))
-            inds = inds[indices]
-            inds = inds[:to_choose]
-            for idx in inds:
-                texts.append(self.train_text[idx])
-                labels.append(self.train_targets[idx])
-
-        torch.set_rng_state(old_state)
-
-        return texts, labels
-
-    def __sample_reorder(self, texts, targets):
-        old_state = torch.get_rng_state()
-        torch.manual_seed(self.order_seed)
-
-        indices = torch.randperm(len(texts))
-        texts = [texts[idx] for idx in indices]
-        targets = [targets[idx] for idx in indices]
-
-        torch.set_rng_state(old_state)
-
-        return texts, targets
-
-    def __prepare_prompt(self, texts, targets):
         instruction, sentence_start, answer_start, task_type = self.prepare_dataset_keywords()
         instructions = {
             'instruction': instruction,
@@ -386,78 +305,53 @@ class ICLDataset(TextDataset):
             'answer_start': answer_start,
             'task_type': task_type
         }
-
-        context_samples = [(texts[idx], self.classes[targets[idx]]) for idx in range(len(targets))]
+        context_samples = self.pool.get_shots(
+            num_shots=self.num_shots,
+            choice_seed=self.choice_seed,
+            order_seed=self.order_seed
+        )
         return instructions, context_samples
 
-    
+    def batch_data_for_evaluation(self, batch=64):
+        return self.pool.batch_data_for_evaluation(batch_size=batch, split="test")
+
+    def __len__(self):
+        return len(self.test_text)
 
 
 class SimilarityICLDataset(ICLDataset):
+    """
+    DEPRECATED: SimilarityICLDataset relies on external precomputed embeddings (.pkl)
+    and missing attributes. Kept for import compatibility; will raise warning on instantiation.
+    """
 
     def __init__(self, dataset_name, train_size=0.8, num_labelled=1000, num_labelled_test=1000,
                  label_seed=0, device=None, full_test=True, num_shots=4,
                  num_classes=2, choice_seed=0, order_seed=0, model_name='flan-t5',
                  prompt_format=0, train_test_indices=None):
+        warnings.warn(
+            "SimilarityICLDataset is deprecated and depends on missing precomputed embeddings. "
+            "It will be refactored or removed in future releases.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         super(SimilarityICLDataset, self).__init__(dataset_name, train_size, num_labelled, num_labelled_test,
                                                    label_seed, device, full_test, num_shots,
                                                    num_classes, choice_seed, order_seed, model_name,
                                                    prompt_format, train_test_indices)
-        self.num_shots = num_shots
-        self.choice_seed = choice_seed
-        self.order_seed = order_seed
-        with open(os.path.join('data', f'{dataset_name}_embeddings.pkl'), 'rb') as file:
-            self.embeddings = pickle.load(file)
-        self.model_name = model_name
-        self.instructions, self.context_samples = self.prepare_dataset_for_use()
-
-
-    def prepare_dataset_for_use(self):
-        texts, targets = self.__choose_shots()
-        texts, targets = self.__sample_reorder(texts, targets)
-        prompts, targets = self.__prepare_prompt(texts, targets)
-        return prompts, targets
-
-    
-    def batch_data_for_evaluation(self, batch=64):
-        start_idx = 0
-        end_idx = batch
-
-        while start_idx < len(self.prompts):
-            data = self.prompts[start_idx : end_idx]
-            labels = self.targets[start_idx : end_idx]
-
-            yield data, labels
-
-            start_idx = end_idx
-            end_idx += batch
-    
-
-    def __choose_shots(self):
-        to_choose = int(self.num_shots / self.num_classes)
-
-        test_embeddings = self.embeddings[self.test_indices]
-        train_true_embeddings = self.embeddings[self.true_indices]
-        train_false_embeddings = self.embeddings[self.false_indices]
-
-        texts = []
-        targets = []
-        old_state = torch.get_rng_state()
-        torch.manual_seed(self.choice_seed)
-        indices_true = cosine_similarity(test_embeddings, train_true_embeddings).argsort()[::-1][:, :to_choose]
-        indices_false = cosine_similarity(test_embeddings, train_false_embeddings).argsort()[::-1][:, :to_choose]
-        for true_idx, false_idx in zip(indices_true, indices_false):
-            temp_texts = [self.train_text[self.used_true_indices[idx]] for idx in true_idx]
-            temp_texts.extend([self.train_text[self.used_false_indices[idx]] for idx in false_idx])
-            texts.append(temp_texts)
-        targets = [self.train_targets[self.used_true_indices[idx]] for idx in indices_true[0]]
-        targets.extend([self.train_targets[self.used_false_indices[idx]] for idx in indices_false[0]])
-        torch.set_rng_state(old_state)
-
-        return texts, targets
+        emb_path = os.path.join('data', f'{dataset_name}_embeddings.pkl')
+        if os.path.exists(emb_path):
+            with open(emb_path, 'rb') as file:
+                self.embeddings = pickle.load(file)
+        else:
+            self.embeddings = None
 
 
 class PromptDataset(TextDataset):
+    """
+    Zero-shot prompting dataset wrapper delegating batching to SamplePool.
+    """
+
     def __init__(self, dataset_name, train_size=0.8, num_labelled=1000, num_labelled_test=1000,
                  label_seed=0, device=None, full_test=True, model_name='flan-t5',
                  prompt_format=0, train_test_indices=None):
@@ -468,29 +362,6 @@ class PromptDataset(TextDataset):
         self.instructions, self.context_samples = self.prepare_dataset_for_use()
 
     def prepare_dataset_for_use(self):
-        instructions, context_samples = self.__prepare_prompt()
-        return instructions, context_samples
-
-    
-    def batch_data_for_evaluation(self, batch=64):
-        start_idx = 0
-        end_idx = batch
-
-        while start_idx < len(self.test_text):
-            data = self.test_text[start_idx : end_idx]
-            labels = self.test_targets[start_idx : end_idx]
-
-            yield data, labels
-
-            start_idx = end_idx
-            end_idx += batch
-
-
-    def __len__(self):
-        return len(self.test_text)
-
-    
-    def __prepare_prompt(self):
         instruction, sentence_start, answer_start, task_type = self.prepare_dataset_keywords()
         instructions = {
             'instruction': instruction,
@@ -498,12 +369,21 @@ class PromptDataset(TextDataset):
             'answer_start': answer_start,
             'task_type': task_type
         }
-
         context_samples = []
         return instructions, context_samples
 
+    def batch_data_for_evaluation(self, batch=64):
+        return self.pool.batch_data_for_evaluation(batch_size=batch, split="test")
+
+    def __len__(self):
+        return len(self.test_text)
+
 
 class InstructionTuningDataset(ICLDataset):
+    """
+    Instruction-tuning dataset wrapper delegating sample formatting to SamplePool.
+    """
+
     def __init__(self, dataset_name, train_size=0.8, num_labelled=1000, num_labelled_test=1000,
                  label_seed=0, device=None, full_test=True, model_name='flan-t5',
                  prompt_format=0, train_test_indices=None):
@@ -514,27 +394,6 @@ class InstructionTuningDataset(ICLDataset):
         self.instructions, self.context_samples = self.prepare_dataset_for_use()
 
     def prepare_dataset_for_use(self):
-        instructions, context_samples = self.__prepare_prompt(self.train_text, self.train_targets)
-        return instructions, context_samples
-
-    
-    def batch_data_for_evaluation(self, batch=64):
-        start_idx = 0
-        end_idx = batch
-
-        while start_idx < len(self.prompts):
-            data = self.prompts[start_idx : end_idx]
-            labels = self.targets[start_idx : end_idx]
-
-            yield data, labels
-
-            start_idx = end_idx
-            end_idx += batch
-    
-    def __len__(self):
-        return len(self.prompts)
-
-    def __prepare_prompt(self, texts, targets):
         instruction, sentence_start, answer_start, task_type = self.prepare_dataset_keywords()
         instructions = {
             'instruction': instruction,
@@ -542,9 +401,14 @@ class InstructionTuningDataset(ICLDataset):
             'answer_start': answer_start,
             'task_type': task_type
         }
-
-        context_samples = [(texts[idx], self.classes[targets[idx]]) for idx in range(len(targets))]
+        context_samples = [(self.train_text[idx], self.classes[self.train_targets[idx]]) for idx in range(len(self.train_targets))]
         return instructions, context_samples
+
+    def batch_data_for_evaluation(self, batch=64):
+        return self.pool.batch_data_for_evaluation(batch_size=batch, split="train")
+
+    def __len__(self):
+        return len(self.train_text)
 
 
 class FineTuningDataset(TextDataset):
