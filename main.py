@@ -7,6 +7,7 @@ from transfer_learning.models import BERTBase, RoBERTaBase
 from evaluator import ModelEvaluator, _parse_results as parse_results
 from prompter import PromptFormatter
 from rng import RNGController, RNGStream
+from result_store import ResultStore
 import re
 import random
 import pickle
@@ -492,6 +493,17 @@ elif EXPERIMENT_TYPE in ('icl', 'prompting', 'icl_similarity'):
 
 else:
     model_name = f'{MODEL}-{MODEL_SIZE}{"-uncased" if MODEL == "bert" else ""}'
+
+result_store = ResultStore(
+    results_path=RESULTS_PATH,
+    experiment_name=args.experiment_name,
+    experiment_type=EXPERIMENT_TYPE,
+    model_name=model_name,
+    dataset=DATASET,
+    factor=FACTOR,
+    configuration_name=args.configuration_name,
+    legacy_json=True,
+)
     
 total_runs = args.rskf_repeats * args.rskf_splits
 run_seeds_path = os.path.join(RESULTS_PATH, 'run_seeds.pkl')
@@ -526,7 +538,7 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
         os.makedirs(fold_path)
 
 
-    if os.path.exists(os.path.join(fold_path, 'results.json')) and args.regenerate == 0:
+    if result_store.has_fold(r, k) and args.regenerate == 0:
         print(f'RSKF repeat {r}, fold {k} already exists. Skipping!')
         continue
 
@@ -539,16 +551,21 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
         isolated_factor=FACTOR
     )
 
+    fold_start_time = time.time()
+
     if EXPERIMENT_TYPE in ['finetuning']:
         print('Running fine-tuning experiments!')
         golden, predicted = ft_experiment(randomness_factor_seeds, train_test_indices=(train_idx, test_idx))
         decodeds = None
+        f1_macro = compute_macro_f1(golden, predicted, failed_label=-1)
+        metrics = {'f1_macro': float(f1_macro)}
     elif EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
         golden, predicted, decodeds = instruction_tuning_experiment(
             randomness_factor_seeds, model_name, tokenizer, fold_path, train_test_indices=(train_idx, test_idx)
         )
         f1_prompting = compute_macro_f1(golden['prompting'], predicted['prompting'], failed_label=-1)
         f1_icl       = compute_macro_f1(golden['icl'],       predicted['icl'],       failed_label=-1)
+        metrics = {'f1_prompting': float(f1_prompting), 'f1_macro_icl': float(f1_icl)}
     else:
         eval_model = None if MODEL == 'chatgpt' else model
         eval_tok = None if MODEL == 'chatgpt' else tokenizer
@@ -556,25 +573,24 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
             randomness_factor_seeds, eval_model, eval_tok, EXPERIMENT_TYPE, investigation_path=fold_path,
             train_test_indices=(train_idx, test_idx)
         )
-    
-    if(EXPERIMENT_TYPE not in ['instruction_tuning', 'instruction_tuning_steps']):
         f1_macro = compute_macro_f1(golden, predicted, failed_label=-1)
-        print(f1_macro)
-        results = {'f1_macro': float(f1_macro), **randomness_factor_seeds}
-    else:
-        results = {'f1_prompting': float(f1_prompting), 'f1_macro_icl': float(f1_icl), **randomness_factor_seeds}
-        
-    results['real'] = golden
-    results['predicted'] = predicted
-    results['base_model'] = model_name
-    results['rskf_repeat'] = int(r)
-    results['rskf_fold'] = int(k)
-    results['run_seed_used'] = current_run_seed
-    if decodeds is not None:
-        results['decodeds'] = decodeds
+        metrics = {'f1_macro': float(f1_macro)}
 
-    with open(os.path.join(fold_path, 'results.json'), 'w') as file:
-        json.dump(results, file)
+    duration = time.time() - fold_start_time
+    if 'f1_macro' in metrics:
+        print(metrics['f1_macro'])
+
+    result_store.record_fold(
+        repeat=r,
+        fold=k,
+        run_seed_used=current_run_seed,
+        randomness_factor_seeds=randomness_factor_seeds,
+        metrics=metrics,
+        real=golden,
+        predicted=predicted,
+        decodeds=decodeds,
+        duration_seconds=duration,
+    )
       
     # Clean checkpoints  
     if EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
