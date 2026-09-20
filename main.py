@@ -5,6 +5,7 @@ from datasets import Dataset
 from data import ICLDataset, FineTuningDataset, DatasetLoader, PromptDataset, SimilarityICLDataset, InstructionTuningDataset, TextDataset, load_text_and_targets, SeededRandomSampler
 from transfer_learning.models import BERTBase, RoBERTaBase
 from evaluator import ModelEvaluator, _parse_results as parse_results
+from prompter import PromptFormatter
 import re
 import random
 import pickle
@@ -105,101 +106,6 @@ def prompt_icl_experiment(randomness_factor_seeds, model, tokenizer, experiment=
 
 
 
-def prepare_instruction_tuning_flan_t5(dataset):
-    instructions = dataset.instructions
-    context_samples = dataset.context_samples
-    if PROMPT_FORMAT == 0:
-        prompt = ''
-        prompt += f'{instructions["instruction"]}\n'
-    elif DATASET == 'snips' and PROMPT_FORMAT == 3:
-        prompt = ''
-    else:
-        prompt = ''
-
-    final_prompts = []
-    for sample in context_samples:
-        new_prompt = copy.deepcopy(prompt)
-        if PROMPT_FORMAT == 0:
-            new_prompt += f'{instructions["sentence_start"]}: {sample[0].strip()}\n{instructions["answer_start"]}: {sample[1].strip()}'
-        elif DATASET == 'snips' and PROMPT_FORMAT == 3:
-            new_prompt += f'User: {sample[0].strip()}\n{instructions["instruction"]} {instructions["answer_start"]}: {sample[1].strip()}'
-        else:
-            new_prompt += f'{sample[0].strip()}\n{instructions["instruction"]} {instructions["answer_start"]}: {sample[1].strip()}'
-        final_prompts.append(new_prompt)
-
-    return final_prompts
-
-def prepare_instruction_tuning_mistral(dataset):
-    instructions = dataset.instructions
-    context_samples = dataset.context_samples
-    
-    instruction_text = instructions["instruction"]
-    
-    final_prompts = []
-    for sample in context_samples:
-        
-        if PROMPT_FORMAT == 0:
-            user_text = f"{instruction_text}\n{instructions['sentence_start']}: {sample[0].strip()}"
-        else:
-            user_text = f"{sample[0].strip()} {instruction_text}"
-
-        full_text = f"<s>[INST] {user_text} [/INST] {sample[1].strip()}</s>"
-        final_prompts.append(full_text)
-
-    return final_prompts
-
-def prepare_instruction_tuning_zephyr(dataset):
-    instructions = dataset.instructions
-    context_samples = dataset.context_samples
-    
-    instruction_text = instructions["instruction"]
-
-    final_prompts = []
-    for sample in context_samples:
-        if PROMPT_FORMAT == 0:
-            user_text = f"{instructions['sentence_start']}: {sample[0].strip()}"
-        else:
-            user_text = f"{sample[0].strip()} {instructions['instruction']}"
-
-        full_text = (
-            f"<|system|>\n{instruction_text}</s>\n"
-            f"<|user|>\n{user_text}</s>\n"
-            f"<|assistant|>\n{sample[1].strip()}</s>"
-        )
-        final_prompts.append(full_text)
-
-    return final_prompts
-
-def prepare_instruction_tuning_llama3(dataset):
-    instructions = dataset.instructions
-    context_samples = dataset.context_samples
-    
-    system_header = "<|start_header_id|>system<|end_header_id|>\n\n"
-    user_header = "<|start_header_id|>user<|end_header_id|>\n\n"
-    assistant_header = "<|start_header_id|>assistant<|end_header_id|>\n\n"
-    eot = "<|eot_id|>"
-    
-    sys_msg = f"You are a helpful assistant. Follow the instruction exactly. Determine the {instructions['task_type']}."
-    
-    final_prompts = []
-    for sample in context_samples:
-        if PROMPT_FORMAT == 0:
-            user_input = f'{instructions["instruction"]}\n{instructions["sentence_start"]}: {sample[0].strip()}\n{instructions["answer_start"]}: '
-        else:
-            user_input = f'{sample[0].strip()} {instructions["instruction"]}'
-            
-        label_text = sample[1].strip()
-        
-        full_text = (
-            f"{system_header}{sys_msg}{eot}"
-            f"{user_header}{user_input}{eot}"
-            f"{assistant_header}{label_text}{eot}"
-        )
-        final_prompts.append(full_text)
-
-    return final_prompts
-
-
 def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer, investigation_path,
                                   train_test_indices=None):
     dataset = InstructionTuningDataset(
@@ -215,10 +121,17 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         train_test_indices=train_test_indices
     )
 
+    prompter = PromptFormatter(model_name=MODEL, prompt_format=PROMPT_FORMAT)
+    prompts = prompter.format_instruction_tuning(
+        dataset.context_samples,
+        dataset_name=DATASET,
+        classes=dataset.classes,
+        custom_instruction=getattr(dataset, 'instructions', None)
+    )
+    response_template = prompter.get_response_template()
+
     if MODEL == 'flan-t5':
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name).cuda()
-        prompts = prepare_instruction_tuning_flan_t5(dataset)
-        response_template = "Answer:"
     elif MODEL in ['mistral', 'zephyr', 'llama3']:
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -244,16 +157,6 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         tokenizer.padding_side = 'right'
 
         model = prepare_model_for_kbit_training(model)
-        
-        if MODEL == 'mistral':
-            prompts = prepare_instruction_tuning_mistral(dataset)
-            response_template = "[/INST]"
-        elif MODEL == 'zephyr':
-            prompts = prepare_instruction_tuning_zephyr(dataset)
-            response_template = "<|assistant|>"
-        elif MODEL == 'llama3':
-            prompts = prepare_instruction_tuning_llama3(dataset)
-            response_template = "<|start_header_id|>assistant<|end_header_id|>\n\n"
             
     all_idx = np.arange(len(prompts))
     train_idx, val_idx = train_test_split(

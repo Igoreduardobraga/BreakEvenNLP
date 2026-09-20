@@ -9,6 +9,7 @@ import copy
 import os
 import pickle
 import time
+from prompter import PromptFormatter
 
 
 def _parse_results(text, classes):
@@ -41,56 +42,32 @@ def _parse_results(text, classes):
 class _Seq2SeqAdapter:
     """Internal adapter for encoder-decoder models (e.g. Flan-T5)."""
 
-    def __init__(self, model, tokenizer, batch_size=64, prompt_format=0, max_new_tokens=10, device='cuda'):
+    def __init__(self, model, tokenizer, prompter=None, batch_size=64, prompt_format=0, max_new_tokens=10, device='cuda'):
         self.model = model
         self.tokenizer = tokenizer
         self.batch_size = batch_size
         self.prompt_format = prompt_format
         self.max_new_tokens = max_new_tokens
         self.device = device
-
-    def _prepare_prompt(self, dataset, batch_samples):
-        instructions = dataset.instructions
-        prompts = []
-        for sample in batch_samples:
-            if self.prompt_format == 0:
-                p = f"{instructions['instruction']}\n{instructions['sentence_start']}: {sample.strip()}\n{instructions['answer_start']}: "
-            else:
-                p = f"{sample.strip()}\n{instructions['instruction']} "
-            prompts.append(p)
-        return prompts
-
-    def _prepare_icl(self, dataset, batch_samples):
-        instructions = dataset.instructions
-        context_samples = getattr(dataset, 'context_samples', [])
-        if self.prompt_format == 0:
-            base = f"{instructions['instruction']}\n"
-            for s in context_samples:
-                base += f"{instructions['sentence_start']}: {s[0].strip()}\n{instructions['answer_start']}: {s[1].strip()}\n"
-        else:
-            base = ""
-            for s in context_samples:
-                base += f"{s[0].strip()}\n{instructions['instruction']} {s[1].strip()}\n"
-
-        prompts = []
-        for sample in batch_samples:
-            if self.prompt_format == 0:
-                p = f"{base}{instructions['sentence_start']}: {sample.strip()}\n{instructions['answer_start']}: "
-            else:
-                p = f"{base}{sample.strip()}\n{instructions['instruction']} "
-            prompts.append(p)
-        return prompts
+        self.prompter = prompter or PromptFormatter(model_name='flan-t5', prompt_format=prompt_format, tokenizer=tokenizer)
 
     def evaluate(self, dataset, mode='prompting'):
         golden = []
         predicted = []
         decodeds = []
 
+        shots = getattr(dataset, 'context_samples', None) if mode == 'icl' else None
+        dataset_name = getattr(dataset, 'dataset_name', 'sst2')
+        custom_inst = getattr(dataset, 'instructions', None)
+
         for data, labels in dataset.batch_data_for_evaluation(self.batch_size):
-            if mode == 'icl':
-                batch_prompts = self._prepare_icl(dataset, data)
-            else:
-                batch_prompts = self._prepare_prompt(dataset, data)
+            batch_prompts = self.prompter.format_batch(
+                data,
+                dataset_name=dataset_name,
+                classes=dataset.classes,
+                shots=shots,
+                custom_instruction=custom_inst
+            )
 
             encoded = self.tokenizer(batch_prompts, return_tensors='pt', padding='longest', truncation=True)
             if hasattr(encoded, 'to'):
@@ -117,7 +94,7 @@ class _Seq2SeqAdapter:
 class _CausalLMAdapter:
     """Internal adapter for causal autoregressive models (LLaMA-2, LLaMA-3, Mistral, Zephyr)."""
 
-    def __init__(self, model, tokenizer, model_family, batch_size=1, prompt_format=0, max_new_tokens=10, generation_config=None, device='cuda'):
+    def __init__(self, model, tokenizer, model_family, prompter=None, batch_size=1, prompt_format=0, max_new_tokens=10, generation_config=None, device='cuda'):
         self.model = model
         self.tokenizer = tokenizer
         self.model_family = model_family
@@ -126,103 +103,7 @@ class _CausalLMAdapter:
         self.max_new_tokens = max_new_tokens
         self.generation_config = generation_config
         self.device = device
-
-    def _build_messages(self, dataset, sample, mode='prompting'):
-        instructions = dataset.instructions
-        context_samples = getattr(dataset, 'context_samples', [])
-
-        if self.model_family == 'llama3':
-            options_str = ", ".join([f"'{c}'" for c in dataset.classes])
-            system_message = {
-                "role": "system",
-                "content": (
-                    f"You are an expert classifier. Your task is to determine the {instructions['task_type']}. "
-                    f"You must answer with exactly one of these options: {options_str}. "
-                    f"Do not explain. Do not output the number, only the class name."
-                )
-            }
-            messages = [system_message]
-            if mode == 'icl':
-                for s in context_samples:
-                    if self.prompt_format == 0:
-                        u_content = f"{instructions['sentence_start']}: {s[0]}"
-                    else:
-                        u_content = f"{s[0]} {instructions['instruction']}"
-                    messages.append({'role': 'user', 'content': u_content})
-                    messages.append({'role': 'assistant', 'content': s[1]})
-
-            if self.prompt_format == 0:
-                q_content = f"Text: {sample}\nBased on the text above, determine the {instructions['task_type']}. Answer:"
-            else:
-                q_content = f"{sample} {instructions['instruction']} "
-            messages.append({'role': 'user', 'content': q_content})
-            return messages
-
-        elif self.model_family == 'mistral':
-            instruction_text = f"{instructions['instruction']} Do not explain. Answer only with the class name."
-            messages = []
-            if mode == 'icl':
-                messages.append({'role': 'user', 'content': instruction_text})
-                messages.append({'role': 'assistant', 'content': 'Understood.'})
-                for s in context_samples:
-                    if self.prompt_format == 0:
-                        content = f"{instructions['sentence_start']}: {s[0]}"
-                    else:
-                        content = f"{s[0]} {instructions['instruction']}"
-                    messages.append({'role': 'user', 'content': content})
-                    messages.append({'role': 'assistant', 'content': s[1]})
-
-            if self.prompt_format == 0:
-                if mode == 'prompting':
-                    content = f"{instruction_text}\n\n{instructions['sentence_start']}: {sample}"
-                else:
-                    content = f"{instructions['sentence_start']}: {sample}"
-            else:
-                content = f"{sample} {instructions['instruction']}"
-            messages.append({'role': 'user', 'content': content})
-            return messages
-
-        elif self.model_family == 'zephyr':
-            instruction_text = f"{instructions['instruction']} Answer with the class name only."
-            messages = [{'role': 'system', 'content': instruction_text}]
-            if mode == 'icl':
-                for s in context_samples:
-                    if self.prompt_format == 0:
-                        user_content = f"{instructions['sentence_start']}: {s[0]}"
-                    else:
-                        user_content = f"{s[0]} {instructions['instruction']}"
-                    messages.append({'role': 'user', 'content': user_content})
-                    messages.append({'role': 'assistant', 'content': s[1]})
-
-            if self.prompt_format == 0:
-                content = f"{instructions['sentence_start']}: {sample}"
-            else:
-                content = f"{sample} {instructions['instruction']}"
-            messages.append({'role': 'user', 'content': content})
-            return messages
-
-        elif self.model_family == 'llama2':
-            sys_msg = (
-                f"You are a helpful assistant. Your task is {instructions['task_type']}. "
-                f"Answer ONLY with one of the valid class names. Do not explain."
-            )
-            prompt_history = ""
-            if mode == 'icl':
-                for s in context_samples:
-                    prompt_history += f"<s>[INST] {s[0]} [/INST] {s[1]} </s>"
-
-            if self.prompt_format == 0:
-                user_query = f"{instructions['instruction']}\n\nInput: {sample}\nAnswer:"
-            else:
-                user_query = f"{sample}\n{instructions['instruction']}"
-
-            if mode == 'icl' and len(context_samples) > 0:
-                final_prompt = f"<s>[INST] <<SYS>>\n{sys_msg}\n<</SYS>>\n\n{prompt_history}{user_query} [/INST]"
-            else:
-                final_prompt = f"<s>[INST] <<SYS>>\n{sys_msg}\n<</SYS>>\n\n{user_query} [/INST]"
-            return final_prompt
-
-        raise NotImplementedError(f"Unsupported causal model family: {self.model_family}")
+        self.prompter = prompter or PromptFormatter(model_name=model_family, prompt_format=prompt_format, tokenizer=tokenizer)
 
     def evaluate(self, dataset, mode='prompting'):
         golden = []
@@ -237,16 +118,26 @@ class _CausalLMAdapter:
             if eot_id is not None and eot_id not in terminators:
                 terminators.append(eot_id)
 
+        shots = getattr(dataset, 'context_samples', None) if mode == 'icl' else None
+        dataset_name = getattr(dataset, 'dataset_name', 'sst2')
+        custom_inst = getattr(dataset, 'instructions', None)
+
         for data, labels in dataset.batch_data_for_evaluation(self.batch_size):
             for sample in data:
-                msgs = self._build_messages(dataset, sample, mode)
+                formatted = self.prompter.format(
+                    sample,
+                    dataset_name=dataset_name,
+                    classes=dataset.classes,
+                    shots=shots,
+                    custom_instruction=custom_inst
+                )
 
-                if isinstance(msgs, str):
-                    prompt_str = msgs
+                if isinstance(formatted, str):
+                    prompt_str = formatted
                 elif hasattr(self.tokenizer, 'apply_chat_template'):
-                    prompt_str = self.tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+                    prompt_str = self.tokenizer.apply_chat_template(formatted, tokenize=False, add_generation_prompt=True)
                 else:
-                    prompt_str = str(msgs)
+                    prompt_str = str(formatted)
 
                 inputs = self.tokenizer(prompt_str, return_tensors="pt", padding=True, truncation=True)
                 if hasattr(inputs, 'to'):
@@ -301,12 +192,13 @@ class _CausalLMAdapter:
 class _APIAdapter:
     """Internal adapter for external API models (ChatGPT)."""
 
-    def __init__(self, client=None, model_id='gpt-3.5-turbo', prompt_format=0, max_retries=5, retry_delay=0.01):
+    def __init__(self, client=None, model_id='gpt-3.5-turbo', prompter=None, prompt_format=0, max_retries=5, retry_delay=0.01):
         self.client = client
         self.model_id = model_id
         self.prompt_format = prompt_format
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.prompter = prompter or PromptFormatter(model_name=model_id, prompt_format=prompt_format)
 
     def _get_client(self):
         if self.client is not None:
@@ -317,28 +209,6 @@ class _APIAdapter:
         self.client = openai.OpenAI(api_key=api_key, organization=organization)
         return self.client
 
-    def _prepare_prompt(self, dataset, sample):
-        instructions = dataset.instructions
-        if self.prompt_format == 0:
-            return f"{instructions['instruction']}\n{instructions['sentence_start']}: {sample.strip()}\n{instructions['answer_start']}: "
-        else:
-            return f"{sample.strip()}\n{instructions['instruction']} "
-
-    def _prepare_icl(self, dataset, sample):
-        instructions = dataset.instructions
-        context_samples = getattr(dataset, 'context_samples', [])
-        if self.prompt_format == 0:
-            prompt = f"{instructions['instruction']}\n"
-            for s in context_samples:
-                prompt += f"{instructions['sentence_start']}: {s[0].strip()}\n{instructions['answer_start']}: {s[1].strip()}\n"
-            prompt += f"{instructions['sentence_start']}: {sample.strip()}\n{instructions['answer_start']}: "
-        else:
-            prompt = ""
-            for s in context_samples:
-                prompt += f"{s[0].strip()}\n{instructions['instruction']} {s[1].strip()}\n"
-            prompt += f"{sample.strip()}\n{instructions['instruction']} "
-        return prompt
-
     def evaluate(self, dataset, mode='prompting', partial_save_path=None):
         client = self._get_client()
 
@@ -348,6 +218,10 @@ class _APIAdapter:
         golden = []
         predicted = []
         decodeds = []
+
+        shots = getattr(dataset, 'context_samples', None) if mode == 'icl' else None
+        dataset_name = getattr(dataset, 'dataset_name', 'sst2')
+        custom_inst = getattr(dataset, 'instructions', None)
 
         sample_idx = 0
         for data, labels in dataset.batch_data_for_evaluation(1):
@@ -361,17 +235,25 @@ class _APIAdapter:
                     saved_result = pickle.load(f)
                 decoded = saved_result['predicted']
             else:
-                prompt = self._prepare_icl(dataset, sample) if mode == 'icl' else self._prepare_prompt(dataset, sample)
+                messages = self.prompter.format(
+                    sample,
+                    dataset_name=dataset_name,
+                    classes=dataset.classes,
+                    shots=shots,
+                    custom_instruction=custom_inst
+                )
+                if isinstance(messages, str):
+                    messages = [
+                        {"role": "system", "content": "You are a helpful assistant that follows all the instructions."},
+                        {"role": "user", "content": messages}
+                    ]
 
                 attempts = 0
                 while True:
                     try:
                         response = client.chat.completions.create(
                             model=self.model_id,
-                            messages=[
-                                {"role": "system", "content": "You are a helpful assistant that follows all the instructions."},
-                                {"role": "user", "content": prompt}
-                            ],
+                            messages=messages,
                             temperature=0,
                             max_tokens=30
                         )
@@ -422,6 +304,7 @@ class ModelEvaluator:
         self.max_new_tokens = max_new_tokens
         self.generation_config = generation_config
         self.device = device
+        self.prompter = PromptFormatter(model_name=self.model_name, prompt_format=self.prompt_format, tokenizer=self.tokenizer)
 
         self.adapter = self._resolve_adapter()
 
@@ -430,6 +313,7 @@ class ModelEvaluator:
             return _Seq2SeqAdapter(
                 model=self.model,
                 tokenizer=self.tokenizer,
+                prompter=self.prompter,
                 batch_size=self.batch_size,
                 prompt_format=self.prompt_format,
                 max_new_tokens=self.max_new_tokens,
@@ -439,6 +323,7 @@ class ModelEvaluator:
             return _APIAdapter(
                 client=self.model if self.model is not None and not isinstance(self.model, str) else None,
                 model_id=self.model_name if self.model_name != 'chatgpt' else 'gpt-3.5-turbo',
+                prompter=self.prompter,
                 prompt_format=self.prompt_format
             )
         elif any(fam in self.model_name for fam in ('llama3', 'mistral', 'zephyr', 'llama2')):
@@ -451,6 +336,7 @@ class ModelEvaluator:
                 model=self.model,
                 tokenizer=self.tokenizer,
                 model_family=family,
+                prompter=self.prompter,
                 batch_size=self.batch_size,
                 prompt_format=self.prompt_format,
                 max_new_tokens=self.max_new_tokens,

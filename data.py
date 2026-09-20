@@ -296,52 +296,10 @@ class TextDataset(Dataset):
             torch.set_rng_state(old_state)
 
     def prepare_dataset_keywords(self):
-        options_str = ", ".join([f"'{c}'" for c in self.classes])
-
-        prompt = self.prompt_format
-        
-        sentence_start = 'Text'
-        answer_start = 'Answer'
-        task_type = 'classification'
-
-        if self.dataset_name == 'sst2':
-            instruction = f'Analyze the sentiment of the text. Options: {options_str}.'
-            task_type = 'sentiment analysis'
-            
-        elif self.dataset_name == 'cola':
-            instruction = f'Determine if the sentence is grammatically acceptable. Options: {options_str}.'
-            task_type = 'grammatical acceptability'
-            
-        elif self.dataset_name == 'mrpc':
-            instruction = f'Determine if the two sentences are semantically equivalent. Options: {options_str}.'
-            sentence_start = 'Sentences'
-            task_type = 'semantic equivalence'
-            
-        elif self.dataset_name == 'boolq':
-            instruction = f'Read the passage and answer the question with Yes or No.'
-            sentence_start = ''
-            task_type = 'question answering'
-            
-        elif self.dataset_name == 'ag_news':
-            instruction = f'Classify the news article into one of these topics: {options_str}.'
-            task_type = 'news classification'
-            
-        elif self.dataset_name == 'trec':
-            instruction = f'Classify the question type: {options_str}.'
-            task_type = 'question classification'
-            
-        elif self.dataset_name == 'snips':
-            instruction = f'Identify the intent of the user command. Options: {options_str}.'
-            task_type = 'intent detection'
-            
-        elif self.dataset_name == 'db_pedia':
-            instruction = f'Classify the topic of the text: {options_str}.'
-            task_type = 'topic classification'
-
-        else:
-             instruction = f'Classify the text using these options: {options_str}.'
-
-        return instruction, sentence_start, answer_start, task_type
+        from prompter import PromptFormatter
+        formatter = PromptFormatter(model_name="seq2seq", prompt_format=self.prompt_format)
+        info = formatter.get_task_info(self.dataset_name, classes=self.classes)
+        return info["instruction"], info["sentence_start"], info["answer_start"], info["task_type"]
 
 
 class ICLDataset(TextDataset):
