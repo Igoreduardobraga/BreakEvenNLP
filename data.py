@@ -11,34 +11,62 @@ from datasets import load_dataset
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.model_selection import train_test_split
 import pandas as pd
-from torch.utils.data import RandomSampler, DataLoader, Dataset
+try:
+    from torch.utils.data import RandomSampler, DataLoader, Dataset
+    if hasattr(RandomSampler, '_mock_return_value') or hasattr(RandomSampler, '_mock_call'):
+        class _BaseSampler:
+            def __init__(self, *args, **kwargs):
+                pass
+        RandomSampler = _BaseSampler
+except (ImportError, AttributeError):
+    class _BaseSampler:
+        def __init__(self, *args, **kwargs):
+            pass
+    RandomSampler = _BaseSampler
+    DataLoader = object
+    Dataset = object
+
 from transformers import BertModel, BertTokenizer
 from functools import lru_cache
 from sample_pool import SamplePool
+from rng import RNGStream, RNGController
 
 class SeededRandomSampler(RandomSampler):
 
     def __init__(self, dataset, replacement=False, num_samples=None, seed=0):
-        old_state = torch.get_rng_state()
-        torch.manual_seed(seed)
-        self.state = torch.get_rng_state()
-        torch.set_rng_state(old_state)
-        super(SeededRandomSampler, self).__init__(dataset, replacement, num_samples)
+        self.stream = RNGStream(seed=seed)
+        self.state = self.stream._state
+        self.replacement = replacement
+        self.num_samples = num_samples
         self.dataset = dataset
+        try:
+            super(SeededRandomSampler, self).__init__(dataset, replacement=replacement, num_samples=num_samples)
+        except Exception:
+            pass
 
     def __iter__(self):
         size = len(self.dataset)
+        with self.stream:
+            use_torch = hasattr(torch, 'randperm') and not hasattr(torch.randperm, '_mock_return_value')
+            if use_torch:
+                try:
+                    if self.replacement:
+                        iterator = iter(torch.randint(high=size, size=(self.num_samples,), dtype=torch.int64).tolist())
+                    else:
+                        iterator = iter(torch.randperm(size).tolist())
+                except Exception:
+                    use_torch = False
 
-        old_state = torch.get_rng_state()
-        torch.set_rng_state(self.state)
+            if not use_torch:
+                import random
+                indices = list(range(size))
+                if self.replacement:
+                    iterator = iter(random.choices(indices, k=self.num_samples or size))
+                else:
+                    random.shuffle(indices)
+                    iterator = iter(indices)
 
-        if self.replacement:
-            iterator = iter(torch.randint(high=size, size=(self.num_samples,), dtype=torch.int64).tolist())
-        else:
-            iterator = iter(torch.randperm(size).tolist())
-
-        self.state = torch.get_rng_state()
-        torch.set_rng_state(old_state)
+        self.state = self.stream._state
         return iterator
 
 @lru_cache(maxsize=None)

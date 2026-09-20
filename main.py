@@ -6,6 +6,7 @@ from data import ICLDataset, FineTuningDataset, DatasetLoader, PromptDataset, Si
 from transfer_learning.models import BERTBase, RoBERTaBase
 from evaluator import ModelEvaluator, _parse_results as parse_results
 from prompter import PromptFormatter
+from rng import RNGController, RNGStream
 import re
 import random
 import pickle
@@ -83,11 +84,7 @@ def prompt_icl_experiment(randomness_factor_seeds, model, tokenizer, experiment=
             train_test_indices=train_test_indices
         )
 
-    torch.manual_seed(randomness_factor_seeds['model_randomness'])    
-    torch.cuda.manual_seed(randomness_factor_seeds['model_randomness'])
-    torch.cuda.manual_seed_all(randomness_factor_seeds['model_randomness'])
-    np.random.seed(randomness_factor_seeds['model_randomness'])
-    random.seed(randomness_factor_seeds['model_randomness'])
+    RNGController.seed_all(randomness_factor_seeds['model_randomness'])
 
     mode = 'icl' if 'icl' in experiment else 'prompting'
     partial_path = os.path.join(investigation_path, 'partial') if investigation_path else None
@@ -427,11 +424,7 @@ FULL_TEST = args.full_test == 1
 MAX_LEN = args.max_len
 PROMPT_FORMAT = args.prompt_format
 
-torch.manual_seed(0)
-torch.cuda.manual_seed(0)
-torch.cuda.manual_seed_all(0)
-np.random.seed(0)
-random.seed(0)
+RNGController.seed_all(0)
 os.environ['PYTHONHASHSEED'] = '0'
 
 torch.backends.cudnn.deterministic = True
@@ -502,25 +495,12 @@ else:
     
 total_runs = args.rskf_repeats * args.rskf_splits
 run_seeds_path = os.path.join(RESULTS_PATH, 'run_seeds.pkl')
-
-if os.path.exists(run_seeds_path) and args.regenerate == 0:
-    with open(run_seeds_path, 'rb') as file:
-        print(f'Loading existing run seeds:')
-        run_seeds = pickle.load(file)
-        if len(run_seeds) != total_runs:
-             print(f"Warning: Number of saved seeds ({len(run_seeds)}) doesn't match expected runs ({total_runs}). Regenerating.")
-             random.seed(args.rskf_seed)
-             run_seeds = [random.randint(1, 100000) for _ in range(total_runs)]
-             with open(run_seeds_path, 'wb') as file:
-                 pickle.dump(run_seeds, file)
-else:
-    print(f'Generating new run seeds:')
-    random.seed(args.rskf_seed)
-    run_seeds = [random.randint(1, 100000) for _ in range(total_runs)]
-    print(f'Saving new run seeds:')
-    with open(run_seeds_path, 'wb') as file:
-        pickle.dump(run_seeds, file)
-
+run_seeds = RNGController.generate_run_seeds(
+    rskf_seed=args.rskf_seed,
+    total_runs=total_runs,
+    cache_path=run_seeds_path,
+    regenerate=bool(args.regenerate)
+)
 print(f'Using seeds: {run_seeds}')
 
 _, all_targets, _ = load_text_and_targets(DATASET, PROMPT_FORMAT)
@@ -554,13 +534,10 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
     current_run_seed = run_seeds[split_idx]
     print(f'Running RSKF repeat {r}, fold {k} | train={len(train_idx)} test={len(test_idx)} | Seed: {current_run_seed}')
 
-    randomness_factor_seeds = {
-        'label_choice':       current_run_seed,
-        'sample_choice':      current_run_seed,
-        'sample_order':       current_run_seed,
-        'model_initialisation': current_run_seed,
-        'model_randomness':   current_run_seed
-    }
+    randomness_factor_seeds = RNGController.build_factor_seeds(
+        base_seed=current_run_seed,
+        isolated_factor=FACTOR
+    )
 
     if EXPERIMENT_TYPE in ['finetuning']:
         print('Running fine-tuning experiments!')
