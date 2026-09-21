@@ -92,8 +92,17 @@ class _Seq2SeqAdapter:
             if hasattr(encoded, 'to'):
                 encoded = encoded.to(self.device)
 
+            if hasattr(encoded, 'items'):
+                gen_inputs = {k: v for k, v in encoded.items() if k in ('input_ids', 'attention_mask')}
+            elif hasattr(encoded, 'input_ids'):
+                gen_inputs = {'input_ids': encoded.input_ids}
+            elif isinstance(encoded, dict):
+                gen_inputs = encoded
+            else:
+                gen_inputs = {'input_ids': encoded}
+
             out = self.model.generate(
-                **encoded if isinstance(encoded, dict) else {'input_ids': encoded},
+                **gen_inputs,
                 max_new_tokens=self.max_new_tokens,
                 do_sample=False,
                 num_beams=1

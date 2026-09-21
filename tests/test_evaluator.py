@@ -135,6 +135,39 @@ class TestModelEvaluatorSeq2Seq(unittest.TestCase):
         self.assertEqual(predicted, [1, 0])
         self.assertEqual(len(decodeds), 2)
 
+    def test_seq2seq_with_batch_encoding_dictionary_unpacking(self):
+        from collections import UserDict
+
+        class MockBatchEncoding(UserDict):
+            def to(self, device):
+                return self
+
+        class MockTokenizer:
+            def __call__(self, texts, **kwargs):
+                return MockBatchEncoding({'input_ids': [[1, 2, 3] for _ in texts], 'attention_mask': [[1, 1, 1] for _ in texts]})
+
+            def batch_decode(self, token_ids, skip_special_tokens=True):
+                return ['positive' for _ in token_ids]
+
+        class MockModel:
+            def generate(self, **kwargs):
+                self.received_kwargs = kwargs
+                return [[10] for _ in kwargs['input_ids']]
+
+        model = MockModel()
+        evaluator = ModelEvaluator(
+            model=model,
+            tokenizer=MockTokenizer(),
+            model_name='flan-t5',
+            batch_size=2,
+            prompt_format=0,
+            device='cpu'
+        )
+        golden, predicted, decodeds = evaluator.evaluate(DummyDataset(), mode='prompting')
+        self.assertIn('input_ids', model.received_kwargs)
+        self.assertIn('attention_mask', model.received_kwargs)
+        self.assertEqual(predicted, [1, 1])
+
     def test_seq2seq_parsing_failure_returns_negative_one(self):
         tokenizer = DummyTokenizer()
         model = DummySeq2SeqModel(canned_outputs=['completely ambiguous text', 'positive'])
