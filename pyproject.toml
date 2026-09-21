@@ -28,6 +28,7 @@ dependencies = [
     "tqdm==4.67.1",
     "transformers==4.56.2",
     "trl==0.9.6",
+    "rich>=13.0.0",
 ]
 
 [dependency-groups]
