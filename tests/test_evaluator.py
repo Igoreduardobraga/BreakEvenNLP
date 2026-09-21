@@ -328,6 +328,34 @@ class TestModelEvaluatorAPI(unittest.TestCase):
         finally:
             shutil.rmtree(tmp_dir)
 
+    def test_evaluation_result_captures_inputs_and_prompts(self):
+        """Verifies that evaluate() returns an EvaluationResult with inputs and prompts while supporting 3-tuple unpacking."""
+        dataset = DummyDataset()
+        evaluator = ModelEvaluator(
+            model=DummyCausalModel(generated_tokens_per_call=[[20], [21]]),
+            tokenizer=DummyCausalTokenizer(),
+            model_name='llama3',
+            batch_size=1,
+            prompt_format=0
+        )
+
+        res = evaluator.evaluate(dataset, mode='prompting')
+        # 1. Backward-compatible 3-tuple unpacking
+        golden, predicted, decodeds = res
+        self.assertEqual(len(res), 3)
+        self.assertEqual(golden, [1, 0])
+        self.assertEqual(predicted, [1, 0])
+        self.assertEqual(decodeds, ['positive', 'negative'])
+
+        # 2. Rich qualitative attributes
+        self.assertTrue(hasattr(res, 'prompts'))
+        self.assertTrue(hasattr(res, 'inputs'))
+        self.assertEqual(len(res.inputs), 2)
+        self.assertEqual(len(res.prompts), 2)
+        self.assertEqual(res.inputs[0], "I love this")
+        self.assertEqual(res.inputs[1], "I hate this")
+        self.assertIn("I love this", res.prompts[0])
+
 
 if __name__ == '__main__':
     unittest.main()

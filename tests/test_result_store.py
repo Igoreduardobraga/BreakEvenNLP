@@ -225,9 +225,10 @@ class TestResultStore(unittest.TestCase):
                 real=[0, 1], predicted=[0, 1]
             )
 
-            mock_pd.DataFrame.assert_called_once()
-            mock_df.to_parquet.assert_called_once()
+            self.assertEqual(mock_pd.DataFrame.call_count, 2)
+            self.assertEqual(mock_df.to_parquet.call_count, 2)
             self.assertTrue(os.path.exists(os.path.join(self.test_dir, "summary.parquet")))
+            self.assertTrue(os.path.exists(os.path.join(self.test_dir, "predictions.parquet")))
 
     def test_legacy_json_written_by_default(self):
         """Verifies that repeat_{r}_fold_{k}/results.json matches the legacy structure."""
@@ -469,6 +470,106 @@ class TestResultStore(unittest.TestCase):
         self.assertTrue(len(row["git_commit"]) > 0)
         self.assertTrue(len(row["timestamp"]) > 0)
         self.assertAlmostEqual(row["duration_seconds"], 3.14)
+
+    def test_record_fold_creates_predictions_file(self):
+        """Verifies that record_fold writes sample-level qualitative data to predictions file."""
+        from result_store import ResultStore
+
+        store = ResultStore(
+            results_path=self.test_dir,
+            storage_format="csv",
+            **self.exp_meta
+        )
+        factor_seeds = {"data_split": 100, "label_choice": 100}
+        store.record_fold(
+            repeat=0, fold=0, run_seed_used=10,
+            randomness_factor_seeds=factor_seeds,
+            metrics={"f1_macro": 0.5},
+            real=[1, 0, 1],
+            predicted=[1, 1, -1],
+            decodeds=["positive", "positive", "not sure"],
+            inputs=["great film", "awful acting", "maybe ok"],
+            prompts=["prompt 1", "prompt 2", "prompt 3"],
+        )
+
+        preds = store.load_predictions(as_dataframe=False)
+        self.assertEqual(len(preds), 3)
+
+        # Sample 0: correct
+        self.assertEqual(preds[0]["input_text"], "great film")
+        self.assertEqual(preds[0]["prompt"], "prompt 1")
+        self.assertEqual(preds[0]["model_response"], "positive")
+        self.assertEqual(int(preds[0]["predicted_label"]), 1)
+        self.assertEqual(int(preds[0]["golden_label"]), 1)
+        self.assertEqual(str(preds[0]["is_correct"]).lower(), "true")
+        self.assertEqual(preds[0]["error_type"], "correct")
+
+        # Sample 1: misclassification
+        self.assertEqual(int(preds[1]["predicted_label"]), 1)
+        self.assertEqual(int(preds[1]["golden_label"]), 0)
+        self.assertEqual(str(preds[1]["is_correct"]).lower(), "false")
+        self.assertEqual(preds[1]["error_type"], "misclassification")
+
+        # Sample 2: parsing failure (-1)
+        self.assertEqual(int(preds[2]["predicted_label"]), -1)
+        self.assertEqual(str(preds[2]["is_correct"]).lower(), "false")
+        self.assertEqual(preds[2]["error_type"], "parsing_failure")
+
+    def test_load_predictions_filters(self):
+        """Verifies filtering in load_predictions."""
+        from result_store import ResultStore
+
+        store = ResultStore(
+            results_path=self.test_dir,
+            storage_format="csv",
+            **self.exp_meta
+        )
+        store.record_fold(
+            repeat=0, fold=0, run_seed_used=10,
+            randomness_factor_seeds={},
+            metrics={"f1_macro": 0.5},
+            real=[1, 0],
+            predicted=[1, -1],
+            decodeds=["pos", "err"],
+            inputs=["text 1", "text 2"],
+            prompts=["p1", "p2"],
+        )
+
+        failures = store.load_predictions(filters={"error_type": "parsing_failure"}, as_dataframe=False)
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]["input_text"], "text 2")
+
+    def test_factor_seeds_populated_with_or_without_suffix(self):
+        """Verifies that factor seeds dictionary without '_seed' suffix is correctly captured."""
+        from result_store import ResultStore
+
+        store = ResultStore(
+            results_path=self.test_dir,
+            storage_format="csv",
+            **self.exp_meta
+        )
+        # RNGController returns keys without '_seed'
+        factor_seeds = {
+            "data_split": 555,
+            "label_choice": 666,
+            "sample_choice": 777,
+            "sample_order": 888,
+            "model_initialisation": 999,
+            "model_randomness": 111,
+        }
+        store.record_fold(
+            repeat=0, fold=0, run_seed_used=10,
+            randomness_factor_seeds=factor_seeds,
+            metrics={"f1_macro": 0.9},
+            real=[1], predicted=[1],
+        )
+
+        summary = store.load_summary(as_dataframe=False)
+        self.assertEqual(len(summary), 1)
+        row = summary[0]
+        self.assertEqual(row["data_split_seed"], 555)
+        self.assertEqual(row["label_choice_seed"], 666)
+        self.assertEqual(row["model_randomness_seed"], 111)
 
 
 if __name__ == "__main__":

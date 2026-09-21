@@ -39,6 +39,21 @@ def _parse_results(text, classes):
     return -1
 
 
+class EvaluationResult(tuple):
+    """
+    3-tuple subclass containing (golden, predicted, decodeds) with qualitative metadata attributes.
+    Maintains 100% backward compatibility with code expecting a (golden, predicted, decodeds) tuple.
+    """
+    def __new__(cls, golden, predicted, decodeds, prompts=None, inputs=None):
+        instance = super().__new__(cls, (golden, predicted, decodeds))
+        instance.golden = golden
+        instance.predicted = predicted
+        instance.decodeds = decodeds
+        instance.prompts = list(prompts) if prompts is not None else []
+        instance.inputs = list(inputs) if inputs is not None else []
+        return instance
+
+
 class _Seq2SeqAdapter:
     """Internal adapter for encoder-decoder models (e.g. Flan-T5)."""
 
@@ -55,6 +70,8 @@ class _Seq2SeqAdapter:
         golden = []
         predicted = []
         decodeds = []
+        prompts = []
+        inputs = []
 
         shots = getattr(dataset, 'context_samples', None) if mode == 'icl' else None
         dataset_name = getattr(dataset, 'dataset_name', 'sst2')
@@ -68,6 +85,8 @@ class _Seq2SeqAdapter:
                 shots=shots,
                 custom_instruction=custom_inst
             )
+            inputs.extend(data)
+            prompts.extend(batch_prompts)
 
             encoded = self.tokenizer(batch_prompts, return_tensors='pt', padding='longest', truncation=True)
             if hasattr(encoded, 'to'):
@@ -88,7 +107,7 @@ class _Seq2SeqAdapter:
 
             golden.extend(labels)
 
-        return golden, predicted, decodeds
+        return EvaluationResult(golden, predicted, decodeds, prompts=prompts, inputs=inputs)
 
 
 class _CausalLMAdapter:
@@ -109,6 +128,8 @@ class _CausalLMAdapter:
         golden = []
         predicted = []
         decodeds = []
+        prompts = []
+        inputs = []
 
         terminators = []
         if hasattr(self.tokenizer, 'eos_token_id') and self.tokenizer.eos_token_id is not None:
@@ -139,18 +160,21 @@ class _CausalLMAdapter:
                 else:
                     prompt_str = str(formatted)
 
-                inputs = self.tokenizer(prompt_str, return_tensors="pt", padding=True, truncation=True)
-                if hasattr(inputs, 'to'):
-                    inputs = inputs.to(self.device)
+                inputs.append(sample)
+                prompts.append(prompt_str)
 
-                if hasattr(inputs, 'input_ids'):
-                    input_len = inputs.input_ids.shape[-1] if hasattr(inputs.input_ids, 'shape') else len(inputs.input_ids[0])
-                    input_kwargs = {'input_ids': inputs.input_ids}
-                    if hasattr(inputs, 'attention_mask'):
-                        input_kwargs['attention_mask'] = inputs.attention_mask
+                inputs_tok = self.tokenizer(prompt_str, return_tensors="pt", padding=True, truncation=True)
+                if hasattr(inputs_tok, 'to'):
+                    inputs_tok = inputs_tok.to(self.device)
+
+                if hasattr(inputs_tok, 'input_ids'):
+                    input_len = inputs_tok.input_ids.shape[-1] if hasattr(inputs_tok.input_ids, 'shape') else len(inputs_tok.input_ids[0])
+                    input_kwargs = {'input_ids': inputs_tok.input_ids}
+                    if hasattr(inputs_tok, 'attention_mask'):
+                        input_kwargs['attention_mask'] = inputs_tok.attention_mask
                 else:
-                    input_len = inputs.shape[-1] if hasattr(inputs, 'shape') else len(inputs[0])
-                    input_kwargs = {'input_ids': inputs}
+                    input_len = inputs_tok.shape[-1] if hasattr(inputs_tok, 'shape') else len(inputs_tok[0])
+                    input_kwargs = {'input_ids': inputs_tok}
 
                 gen_kwargs = {
                     'max_new_tokens': self.max_new_tokens,
@@ -158,6 +182,7 @@ class _CausalLMAdapter:
                 }
                 if terminators:
                     gen_kwargs['eos_token_id'] = terminators if len(terminators) > 1 else terminators[0]
+
                 if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
                     gen_kwargs['pad_token_id'] = self.tokenizer.pad_token_id
                 elif hasattr(self.tokenizer, 'eos_token_id') and self.tokenizer.eos_token_id is not None:
@@ -186,7 +211,7 @@ class _CausalLMAdapter:
 
             golden.extend(labels)
 
-        return golden, predicted, decodeds
+        return EvaluationResult(golden, predicted, decodeds, prompts=prompts, inputs=inputs)
 
 
 class _APIAdapter:
@@ -218,6 +243,8 @@ class _APIAdapter:
         golden = []
         predicted = []
         decodeds = []
+        prompts = []
+        inputs = []
 
         shots = getattr(dataset, 'context_samples', None) if mode == 'icl' else None
         dataset_name = getattr(dataset, 'dataset_name', 'sst2')
@@ -234,6 +261,7 @@ class _APIAdapter:
                 with open(pickle_file, 'rb') as f:
                     saved_result = pickle.load(f)
                 decoded = saved_result['predicted']
+                prompt_repr = ""
             else:
                 messages = self.prompter.format(
                     sample,
@@ -242,6 +270,7 @@ class _APIAdapter:
                     shots=shots,
                     custom_instruction=custom_inst
                 )
+                prompt_repr = str(messages)
                 if isinstance(messages, str):
                     messages = [
                         {"role": "system", "content": "You are a helpful assistant that follows all the instructions."},
@@ -269,6 +298,8 @@ class _APIAdapter:
                     with open(pickle_file, 'wb') as f:
                         pickle.dump({'predicted': decoded, 'real': label}, f)
 
+            inputs.append(sample)
+            prompts.append(prompt_repr)
             decodeds.append(decoded)
             pred = _parse_results(decoded, dataset.classes)
             predicted.append(pred)
@@ -276,7 +307,7 @@ class _APIAdapter:
 
             sample_idx += 1
 
-        return golden, predicted, decodeds
+        return EvaluationResult(golden, predicted, decodeds, prompts=prompts, inputs=inputs)
 
 
 class ModelEvaluator:

@@ -4,7 +4,7 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausa
 from datasets import Dataset
 from data import ICLDataset, FineTuningDataset, DatasetLoader, PromptDataset, SimilarityICLDataset, InstructionTuningDataset, TextDataset, load_text_and_targets, SeededRandomSampler
 from transfer_learning.models import BERTBase, RoBERTaBase
-from evaluator import ModelEvaluator, _parse_results as parse_results
+from evaluator import ModelEvaluator, _parse_results as parse_results, EvaluationResult
 from prompter import PromptFormatter
 from rng import RNGController, RNGStream
 from result_store import ResultStore
@@ -226,17 +226,22 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
     golden = {'prompting': None, 'icl': None}
     predicted = {'prompting': None, 'icl': None}
     decoded = {'prompting': None, 'icl': None}
+    prompts = {'prompting': None, 'icl': None}
+    inputs = {'prompting': None, 'icl': None}
     for key in ['prompting', 'icl']:
-        golden[key], predicted[key], decoded[key] = prompt_icl_experiment(
+        eval_res = prompt_icl_experiment(
             randomness_factor_seeds, model, tokenizer, key, investigation_path=investigation_path,
             train_test_indices=train_test_indices
         )
+        golden[key], predicted[key], decoded[key] = eval_res[0], eval_res[1], eval_res[2]
+        prompts[key] = getattr(eval_res, 'prompts', None)
+        inputs[key] = getattr(eval_res, 'inputs', None)
         score = compute_macro_f1(golden[key], predicted[key], failed_label=-1)
         print(score)
         with open(os.path.join(investigation_path, f'{key}_results.json'), 'w') as file:
             json.dump({'real': golden[key], 'predicted': predicted[key]}, file)
 
-    return golden, predicted, decoded
+    return EvaluationResult(golden, predicted, decoded, prompts=prompts, inputs=inputs)
 
 def make_train_val_loaders(dataset, batch_size, shuffle_seed):
     indices = list(range(len(dataset.train_text)))
@@ -557,22 +562,30 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
         print('Running fine-tuning experiments!')
         golden, predicted = ft_experiment(randomness_factor_seeds, train_test_indices=(train_idx, test_idx))
         decodeds = None
+        prompts = None
+        inputs = None
         f1_macro = compute_macro_f1(golden, predicted, failed_label=-1)
         metrics = {'f1_macro': float(f1_macro)}
     elif EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
-        golden, predicted, decodeds = instruction_tuning_experiment(
+        eval_res = instruction_tuning_experiment(
             randomness_factor_seeds, model_name, tokenizer, fold_path, train_test_indices=(train_idx, test_idx)
         )
+        golden, predicted, decodeds = eval_res[0], eval_res[1], eval_res[2]
+        prompts = getattr(eval_res, 'prompts', None)
+        inputs = getattr(eval_res, 'inputs', None)
         f1_prompting = compute_macro_f1(golden['prompting'], predicted['prompting'], failed_label=-1)
         f1_icl       = compute_macro_f1(golden['icl'],       predicted['icl'],       failed_label=-1)
         metrics = {'f1_prompting': float(f1_prompting), 'f1_macro_icl': float(f1_icl)}
     else:
         eval_model = None if MODEL == 'chatgpt' else model
         eval_tok = None if MODEL == 'chatgpt' else tokenizer
-        golden, predicted, decodeds = prompt_icl_experiment(
+        eval_res = prompt_icl_experiment(
             randomness_factor_seeds, eval_model, eval_tok, EXPERIMENT_TYPE, investigation_path=fold_path,
             train_test_indices=(train_idx, test_idx)
         )
+        golden, predicted, decodeds = eval_res[0], eval_res[1], eval_res[2]
+        prompts = getattr(eval_res, 'prompts', None)
+        inputs = getattr(eval_res, 'inputs', None)
         f1_macro = compute_macro_f1(golden, predicted, failed_label=-1)
         metrics = {'f1_macro': float(f1_macro)}
 
@@ -590,6 +603,8 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
         predicted=predicted,
         decodeds=decodeds,
         duration_seconds=duration,
+        inputs=inputs,
+        prompts=prompts,
     )
       
     # Clean checkpoints  

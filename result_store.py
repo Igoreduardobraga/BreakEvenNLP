@@ -36,6 +36,27 @@ SUMMARY_COLUMNS = [
     "git_commit",
 ]
 
+PREDICTION_COLUMNS = [
+    "experiment_name",
+    "experiment_type",
+    "model",
+    "dataset",
+    "factor",
+    "configuration",
+    "rskf_repeat",
+    "rskf_fold",
+    "sample_id",
+    "input_text",
+    "prompt",
+    "model_response",
+    "predicted_label",
+    "golden_label",
+    "is_correct",
+    "error_type",
+    "timestamp",
+    "git_commit",
+]
+
 
 def _get_git_commit() -> str:
     """Best-effort capture of current git commit hash."""
@@ -101,6 +122,24 @@ class ResultStore:
                 return self.results_path / "summary.parquet"
             except ImportError:
                 return self.results_path / "summary.csv"
+
+    @property
+    def predictions_file(self) -> Path:
+        """Determines the active predictions file path based on format preference."""
+        if self.storage_format == "parquet":
+            try:
+                import pyarrow  # noqa: F401
+                return self.results_path / "predictions.parquet"
+            except ImportError:
+                return self.results_path / "predictions.csv"
+        elif self.storage_format == "csv":
+            return self.results_path / "predictions.csv"
+        else:  # 'auto'
+            try:
+                import pyarrow  # noqa: F401
+                return self.results_path / "predictions.parquet"
+            except ImportError:
+                return self.results_path / "predictions.csv"
 
     def has_fold(self, repeat: int, fold: int) -> bool:
         """Checks if a fold has already been recorded."""
@@ -256,8 +295,10 @@ class ResultStore:
         decodeds: Optional[List[str]] = None,
         duration_seconds: Optional[float] = None,
         timestamp: Optional[str] = None,
+        inputs: Optional[List[Any]] = None,
+        prompts: Optional[List[str]] = None,
     ) -> None:
-        """Atomically records the outcome of a single fold into the summary table and legacy JSON."""
+        """Atomically records the outcome of a single fold into summary/prediction tables and legacy JSON."""
         ts = timestamp or datetime.now(timezone.utc).isoformat()
 
         row: Dict[str, Any] = {
@@ -270,12 +311,12 @@ class ResultStore:
             "rskf_repeat": int(repeat),
             "rskf_fold": int(fold),
             "run_seed_used": int(run_seed_used),
-            "data_split_seed": randomness_factor_seeds.get("data_split_seed", ""),
-            "label_choice_seed": randomness_factor_seeds.get("label_choice_seed", ""),
-            "sample_choice_seed": randomness_factor_seeds.get("sample_choice_seed", ""),
-            "sample_order_seed": randomness_factor_seeds.get("sample_order_seed", ""),
-            "model_initialisation_seed": randomness_factor_seeds.get("model_initialisation_seed", ""),
-            "model_randomness_seed": randomness_factor_seeds.get("model_randomness_seed", ""),
+            "data_split_seed": randomness_factor_seeds.get("data_split_seed") or randomness_factor_seeds.get("data_split", ""),
+            "label_choice_seed": randomness_factor_seeds.get("label_choice_seed") or randomness_factor_seeds.get("label_choice", ""),
+            "sample_choice_seed": randomness_factor_seeds.get("sample_choice_seed") or randomness_factor_seeds.get("sample_choice", ""),
+            "sample_order_seed": randomness_factor_seeds.get("sample_order_seed") or randomness_factor_seeds.get("sample_order", ""),
+            "model_initialisation_seed": randomness_factor_seeds.get("model_initialisation_seed") or randomness_factor_seeds.get("model_initialisation", ""),
+            "model_randomness_seed": randomness_factor_seeds.get("model_randomness_seed") or randomness_factor_seeds.get("model_randomness", ""),
             "f1_macro": metrics.get("f1_macro", ""),
             "f1_prompting": metrics.get("f1_prompting", ""),
             "f1_macro_icl": metrics.get("f1_macro_icl", ""),
@@ -285,6 +326,89 @@ class ResultStore:
         }
 
         self._atomic_append_summary(row, repeat=int(repeat), fold=int(fold))
+
+        # Build qualitative sample-level predictions
+        pred_rows: List[Dict[str, Any]] = []
+        if isinstance(real, (list, tuple)):
+            for i in range(len(real)):
+                gold = real[i]
+                pred = predicted[i] if isinstance(predicted, (list, tuple)) and i < len(predicted) else None
+                dec = decodeds[i] if decodeds is not None and i < len(decodeds) else ""
+                inp = str(inputs[i]) if inputs is not None and i < len(inputs) else ""
+                prm = str(prompts[i]) if prompts is not None and i < len(prompts) else ""
+
+                is_corr = bool(pred == gold and pred != -1)
+                if pred == -1:
+                    err_type = "parsing_failure"
+                elif pred == gold:
+                    err_type = "correct"
+                else:
+                    err_type = "misclassification"
+
+                pred_rows.append({
+                    "experiment_name": self.experiment_name,
+                    "experiment_type": self.experiment_type,
+                    "model": self.model_name,
+                    "dataset": self.dataset,
+                    "factor": self.factor,
+                    "configuration": self.configuration_name,
+                    "rskf_repeat": int(repeat),
+                    "rskf_fold": int(fold),
+                    "sample_id": i,
+                    "input_text": inp,
+                    "prompt": prm,
+                    "model_response": dec,
+                    "predicted_label": pred if pred is not None else "",
+                    "golden_label": gold if gold is not None else "",
+                    "is_correct": is_corr,
+                    "error_type": err_type,
+                    "timestamp": ts,
+                    "git_commit": self._git_commit,
+                })
+        elif isinstance(real, dict):
+            for sub_type, sub_real in real.items():
+                sub_pred = predicted.get(sub_type, []) if isinstance(predicted, dict) else []
+                sub_dec = decodeds.get(sub_type, []) if isinstance(decodeds, dict) else []
+                sub_inp = inputs.get(sub_type, []) if isinstance(inputs, dict) else (inputs or [])
+                sub_prm = prompts.get(sub_type, []) if isinstance(prompts, dict) else (prompts or [])
+                for i in range(len(sub_real)):
+                    gold = sub_real[i]
+                    pred = sub_pred[i] if i < len(sub_pred) else None
+                    dec = sub_dec[i] if i < len(sub_dec) else ""
+                    inp = str(sub_inp[i]) if i < len(sub_inp) else ""
+                    prm = str(sub_prm[i]) if i < len(sub_prm) else ""
+
+                    is_corr = bool(pred == gold and pred != -1)
+                    if pred == -1:
+                        err_type = "parsing_failure"
+                    elif pred == gold:
+                        err_type = "correct"
+                    else:
+                        err_type = "misclassification"
+
+                    pred_rows.append({
+                        "experiment_name": self.experiment_name,
+                        "experiment_type": f"{self.experiment_type}_{sub_type}",
+                        "model": self.model_name,
+                        "dataset": self.dataset,
+                        "factor": self.factor,
+                        "configuration": self.configuration_name,
+                        "rskf_repeat": int(repeat),
+                        "rskf_fold": int(fold),
+                        "sample_id": i,
+                        "input_text": inp,
+                        "prompt": prm,
+                        "model_response": dec,
+                        "predicted_label": pred if pred is not None else "",
+                        "golden_label": gold if gold is not None else "",
+                        "is_correct": is_corr,
+                        "error_type": err_type,
+                        "timestamp": ts,
+                        "git_commit": self._git_commit,
+                    })
+
+        if pred_rows:
+            self._atomic_append_predictions(pred_rows, repeat=int(repeat), fold=int(fold))
 
         if self.legacy_json:
             self._write_legacy_json(
@@ -296,6 +420,8 @@ class ResultStore:
                 real=real,
                 predicted=predicted,
                 decodeds=decodeds,
+                inputs=inputs,
+                prompts=prompts,
             )
 
     def _write_legacy_json(
@@ -308,6 +434,8 @@ class ResultStore:
         real: Union[List[Any], Dict[str, Any], Any],
         predicted: Union[List[Any], Dict[str, Any], Any],
         decodeds: Optional[List[str]] = None,
+        inputs: Optional[List[Any]] = None,
+        prompts: Optional[List[str]] = None,
     ) -> None:
         fold_dir = self.results_path / f"repeat_{repeat}_fold_{fold}"
         fold_dir.mkdir(parents=True, exist_ok=True)
@@ -333,6 +461,10 @@ class ResultStore:
         legacy_dict["run_seed_used"] = int(run_seed_used)
         if decodeds is not None:
             legacy_dict["decodeds"] = decodeds
+        if inputs is not None:
+            legacy_dict["inputs"] = inputs
+        if prompts is not None:
+            legacy_dict["prompts"] = prompts
 
         with tempfile.NamedTemporaryFile("w", dir=fold_dir, delete=False, encoding="utf-8") as tf:
             tmp_path = Path(tf.name)
@@ -343,7 +475,6 @@ class ResultStore:
         """Thread/process-safe atomic write of summary row via staging and atomic replacement."""
         target_file = self.summary_file
 
-        # If writing CSV
         if target_file.suffix == ".csv":
             existing_rows: List[Dict[str, Any]] = []
             if target_file.exists():
@@ -351,7 +482,6 @@ class ResultStore:
                     reader = csv.DictReader(f)
                     existing_rows = list(reader)
 
-            # Update or append
             updated = False
             for i, r in enumerate(existing_rows):
                 if int(r.get("rskf_repeat", -1)) == repeat and int(r.get("rskf_fold", -1)) == fold:
@@ -362,7 +492,6 @@ class ResultStore:
             if not updated:
                 existing_rows.append({k: str(new_row.get(k, "")) for k in SUMMARY_COLUMNS})
 
-            # Atomic staging write
             dir_path = target_file.parent
             with tempfile.NamedTemporaryFile("w", dir=dir_path, delete=False, encoding="utf-8", newline="") as tf:
                 tmp_path = Path(tf.name)
@@ -370,7 +499,6 @@ class ResultStore:
                 writer.writeheader()
                 writer.writerows(existing_rows)
 
-            # Atomic rename / replace
             os.replace(tmp_path, target_file)
 
         elif target_file.suffix == ".parquet":
@@ -391,3 +519,107 @@ class ResultStore:
                 tmp_path = Path(tf.name)
             combined_df.to_parquet(tmp_path, index=False)
             os.replace(tmp_path, target_file)
+
+    def _atomic_append_predictions(self, new_rows: List[Dict[str, Any]], repeat: int, fold: int) -> None:
+        """Thread/process-safe atomic write of prediction rows via staging and atomic replacement."""
+        if not new_rows:
+            return
+        target_file = self.predictions_file
+
+        if target_file.suffix == ".csv":
+            existing_rows: List[Dict[str, Any]] = []
+            if target_file.exists():
+                with open(target_file, "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    existing_rows = [
+                        r for r in reader
+                        if not (int(r.get("rskf_repeat", -1)) == repeat and int(r.get("rskf_fold", -1)) == fold)
+                    ]
+
+            for r in new_rows:
+                existing_rows.append({k: str(r.get(k, "")) for k in PREDICTION_COLUMNS})
+
+            dir_path = target_file.parent
+            with tempfile.NamedTemporaryFile("w", dir=dir_path, delete=False, encoding="utf-8", newline="") as tf:
+                tmp_path = Path(tf.name)
+                writer = csv.DictWriter(tf, fieldnames=PREDICTION_COLUMNS)
+                writer.writeheader()
+                writer.writerows(existing_rows)
+
+            os.replace(tmp_path, target_file)
+
+        elif target_file.suffix == ".parquet":
+            import pandas as pd
+            existing_df = None
+            if target_file.exists():
+                existing_df = pd.read_parquet(target_file)
+
+            new_df = pd.DataFrame(new_rows)
+            if existing_df is not None and not existing_df.empty:
+                mask = ~((existing_df["rskf_repeat"] == repeat) & (existing_df["rskf_fold"] == fold))
+                combined_df = pd.concat([existing_df[mask], new_df], ignore_index=True)
+            else:
+                combined_df = new_df
+
+            dir_path = target_file.parent
+            with tempfile.NamedTemporaryFile("wb", dir=dir_path, delete=False, suffix=".parquet") as tf:
+                tmp_path = Path(tf.name)
+            combined_df.to_parquet(tmp_path, index=False)
+            os.replace(tmp_path, target_file)
+
+    def load_predictions(
+        self,
+        filters: Optional[Dict[str, Any]] = None,
+        as_dataframe: bool = True,
+    ) -> Any:
+        """Loads and returns the qualitative predictions table, optionally filtered."""
+        if not self.predictions_file.exists():
+            if as_dataframe:
+                try:
+                    import pandas as pd
+                    return pd.DataFrame(columns=PREDICTION_COLUMNS)
+                except ImportError:
+                    pass
+            return []
+
+        if as_dataframe:
+            try:
+                import pandas as pd
+                if self.predictions_file.suffix == ".parquet":
+                    df = pd.read_parquet(self.predictions_file)
+                else:
+                    df = pd.read_csv(self.predictions_file)
+
+                if filters:
+                    for col, val in filters.items():
+                        if col in df.columns:
+                            if isinstance(val, (list, tuple, set)):
+                                df = df[df[col].isin(val)]
+                            else:
+                                df = df[df[col] == val]
+                return df
+            except ImportError:
+                pass
+
+        rows: List[Dict[str, Any]] = []
+        if self.predictions_file.suffix == ".csv":
+            with open(self.predictions_file, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for r in reader:
+                    if self._matches_filters(r, filters):
+                        rows.append(r)
+        elif self.predictions_file.suffix == ".parquet":
+            try:
+                import pandas as pd
+                df = pd.read_parquet(self.predictions_file)
+                if filters:
+                    for col, val in filters.items():
+                        if col in df.columns:
+                            if isinstance(val, (list, tuple, set)):
+                                df = df[df[col].isin(val)]
+                            else:
+                                df = df[df[col] == val]
+                return df.to_dict(orient="records")
+            except Exception:
+                pass
+        return rows
