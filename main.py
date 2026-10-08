@@ -3,7 +3,7 @@
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments, get_linear_schedule_with_warmup, EarlyStoppingCallback
 from datasets import Dataset
 from data import ICLDataset, FineTuningDataset, DatasetLoader, PromptDataset, SimilarityICLDataset, InstructionTuningDataset, TextDataset, load_text_and_targets, SeededRandomSampler
-from transfer_learning.models import BERTBase, RoBERTaBase
+from transfer_learning.models import BERTBase, RoBERTaBase, DeBERTaBase
 from evaluator import ModelEvaluator, _parse_results as parse_results, EvaluationResult
 from prompter import PromptFormatter
 from rng import RNGController, RNGStream
@@ -130,7 +130,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
 
     if MODEL == 'flan-t5':
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name).cuda()
-    elif MODEL in ['mistral', 'zephyr', 'llama3']:
+    elif MODEL in ['mistral', 'zephyr', 'llama3', 'qwen', 'phi', 'gemma']:
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_use_double_quant=True,
@@ -138,7 +138,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
             bnb_4bit_compute_dtype=torch.bfloat16
         )
         
-        target_modules = ['up_proj', 'down_proj', 'gate_proj', 'k_proj', 'q_proj', 'v_proj', 'o_proj']
+        target_modules = ['up_proj', 'down_proj', 'gate_proj', 'k_proj', 'q_proj', 'v_proj', 'o_proj', 'qkv_proj', 'gate_up_proj']
 
         peft_config = LoraConfig(
             r=16,
@@ -149,9 +149,11 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
             target_modules=target_modules
         )
         
-        model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=bnb_config, device_map='auto')
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        tokenizer.pad_token = tokenizer.eos_token
+        access_token = os.environ.get('HUGGINGFACE_TOKEN', None)
+        model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=bnb_config, device_map='auto', token=access_token)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, token=access_token)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
         tokenizer.padding_side = 'right'
 
         model = prepare_model_for_kbit_training(model)
@@ -194,7 +196,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         save_total_limit=1,
         greater_is_better=False,
         gradient_accumulation_steps=1,
-        optim="paged_adamw_8bit" if MODEL in ['mistral', 'zephyr'] else 'adamw_torch',
+        optim="paged_adamw_8bit" if MODEL != 'flan-t5' else 'adamw_torch',
         lr_scheduler_type="linear",
         warmup_ratio=0.1,
         dataset_text_field="prompt",
@@ -211,16 +213,16 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         eval_dataset=val_ds,
         data_collator=collator,
         tokenizer=tokenizer,
-        peft_config=peft_config if MODEL in ['mistral', 'zephyr'] else None,
+        peft_config=peft_config if MODEL != 'flan-t5' else None,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=5, early_stopping_threshold=0.0)]
     )
 
     trainer.train()
-    if MODEL in ['mistral', 'zephyr']:
+    if MODEL != 'flan-t5':
        model = trainer.model.merge_and_unload()
     model.eval()
     
-    if MODEL in ['mistral', 'zephyr']:
+    if MODEL != 'flan-t5':
         tokenizer.padding_side = 'left'
 
     golden = {'prompting': None, 'icl': None}
@@ -397,8 +399,8 @@ parser.add_argument('--batch_size', default=64, type=int)
 parser.add_argument('--train_size', default=0.8, type=float)
 parser.add_argument('--num_labelled', default=1000, type=int)
 parser.add_argument('--num_labelled_test', default=1000, type=int)
-parser.add_argument('--model', default='flan-t5', type=str, choices=['bert', 'roberta', 'flan-t5', 'llama2', 'chatgpt', 'protonet', 'maml', 'fomaml', 'reptile', 'mistral', 'zephyr', 'lora_bert', 'lora_roberta', 'llama3'])
-parser.add_argument('--model_size', default='base', type=str, choices=['base', '8b'])
+parser.add_argument('--model', default='flan-t5', type=str, choices=['bert', 'roberta', 'deberta', 'flan-t5', 'llama2', 'chatgpt', 'protonet', 'maml', 'fomaml', 'reptile', 'mistral', 'zephyr', 'lora_bert', 'lora_roberta', 'llama3', 'qwen', 'phi', 'gemma'])
+parser.add_argument('--model_size', default='base', type=str, choices=['base', '8b', '4b', '9b', 'mini', '26b'])
 parser.add_argument('--lr', default=1e-5, type=float)
 parser.add_argument('--num_epochs', default=5, type=int, help='Total number of epochs to train for')
 parser.add_argument('--max_len', default=20, type=int, help='Maximal length of input for fine-tuning experiments')
@@ -415,6 +417,7 @@ device = torch.device('cuda')
 FT_MODELS = {
     'bert':  BERTBase,
     'roberta':  RoBERTaBase,
+    'deberta': DeBERTaBase,
 }
 
 ICL_MODELS = {
@@ -422,7 +425,11 @@ ICL_MODELS = {
     'llama2_base': 'meta-llama/Llama-2-13b-chat-hf',
     'mistral_base': 'mistralai/Mistral-7B-Instruct-v0.1',
     'zephyr_base': 'HuggingFaceH4/zephyr-7b-alpha',
-    'llama3_8b': 'meta-llama/Meta-Llama-3-8B-Instruct'
+    'llama3_8b': 'meta-llama/Meta-Llama-3-8B-Instruct',
+    'qwen_4b': 'Qwen/Qwen3.5-4B',
+    'qwen_9b': 'Qwen/Qwen3.5-9B',
+    'phi_mini': 'microsoft/Phi-4-mini-instruct',
+    'gemma_26b': 'google/gemma-4-26B-A4B',
 }
 
 EXPERIMENT_TYPE = args.experiment_type
@@ -476,20 +483,19 @@ elif EXPERIMENT_TYPE in ('icl', 'prompting', 'icl_similarity'):
         generation_config.do_sample = False
         generation_config.temperature = None
         model.eval()
-    elif MODEL in ['mistral', 'zephyr', 'llama3']:
-        access_token = None
-        if MODEL == 'llama3':
-            access_token = os.environ['HUGGINGFACE_TOKEN']
+    elif MODEL in ['mistral', 'zephyr', 'llama3', 'qwen', 'phi', 'gemma']:
+        access_token = os.environ.get('HUGGINGFACE_TOKEN', None)
         model = AutoModelForCausalLM.from_pretrained(model_name, load_in_4bit=True, device_map="auto", token=access_token)
         tokenizer = AutoTokenizer.from_pretrained(model_name, token=access_token)
         tokenizer.padding_side = 'left'
         
         if tokenizer.pad_token is None:
-            if MODEL == 'llama3':
+            if hasattr(tokenizer, 'eos_token') and tokenizer.eos_token is not None:
                 tokenizer.pad_token = tokenizer.eos_token
             else:
                 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
                 model.resize_token_embeddings(len(tokenizer))
+        model.eval()
     else:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         tokenizer.padding_side = 'right'
@@ -497,7 +503,10 @@ elif EXPERIMENT_TYPE in ('icl', 'prompting', 'icl_similarity'):
         model.eval()
 
 else:
-    model_name = f'{MODEL}-{MODEL_SIZE}{"-uncased" if MODEL == "bert" else ""}'
+    if MODEL == 'deberta':
+        model_name = 'microsoft/deberta-v3-base'
+    else:
+        model_name = f'{MODEL}-{MODEL_SIZE}{"-uncased" if MODEL == "bert" else ""}'
 
 result_store = ResultStore(
     results_path=RESULTS_PATH,

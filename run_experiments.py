@@ -53,7 +53,7 @@ def generate_finetuning_commands() -> List[Dict[str, Any]]:
     """Gera comandos exatamente como definidos em run_experiments/finetuning.sh"""
     commands = []
     datasets = ["sst2", "boolq", "ag_news", "snips"]
-    models = ["bert", "roberta"]
+    models = ["bert", "roberta", "deberta"]
 
     for ds in datasets:
         cfg = DATASET_CONFIGS[ds]
@@ -351,14 +351,164 @@ def generate_prompting_llama3_commands() -> List[Dict[str, Any]]:
     return commands
 
 
+def generate_icl_modern_commands() -> List[Dict[str, Any]]:
+    """Gera comandos de ICL para os novos modelos: Qwen 3.5 4B/9B, Phi-4-mini, Gemma 4 26B A4B"""
+    commands = []
+    datasets = ["boolq", "ag_news", "snips", "sst2"]
+    models = [
+        ("qwen", "4b"),
+        ("qwen", "9b"),
+        ("phi", "mini"),
+        ("gemma", "26b"),
+    ]
+
+    for ds in datasets:
+        cfg = DATASET_CONFIGS[ds]
+        for m, m_size in models:
+            for n in cfg["sizes"]:
+                cmd_args = [
+                    sys.executable, "main.py",
+                    "--experiment_name", "icl",
+                    "--configuration_name", f"num_samples_{n}",
+                    "--experiment_type", "icl",
+                    "--dataset", ds,
+                    "--model", m,
+                    "--model_size", m_size,
+                    "--num_labelled", str(n),
+                    "--full_test", "0",
+                    "--num_labelled_test", "1000",
+                    "--num_shots", "2",
+                    "--batch_size", "2",
+                    "--factor", "golden_model",
+                    "--rskf_splits", str(cfg["rskf_splits"]),
+                    "--rskf_repeats", "1",
+                    "--rskf_seed", "27"
+                ]
+                commands.append({
+                    "script_origin": "icl-modern (run_experiments.py)",
+                    "experiment_type": "icl",
+                    "experiment_name": "icl",
+                    "dataset": ds,
+                    "model": m,
+                    "model_size": m_size,
+                    "num_labelled": n,
+                    "configuration_name": f"num_samples_{n}",
+                    "rskf_splits": cfg["rskf_splits"],
+                    "rskf_repeats": 1,
+                    "cmd_args": cmd_args,
+                })
+    return commands
+
+
+def generate_prompting_modern_commands() -> List[Dict[str, Any]]:
+    """Gera comandos de prompting zero-shot para os novos modelos: Qwen 3.5 4B/9B, Phi-4-mini, Gemma 4 26B A4B"""
+    commands = []
+    datasets = ["ag_news", "snips", "boolq", "sst2"]
+    models = [
+        ("qwen", "4b"),
+        ("qwen", "9b"),
+        ("phi", "mini"),
+        ("gemma", "26b"),
+    ]
+
+    for ds in datasets:
+        cfg = DATASET_CONFIGS[ds]
+        for m, m_size in models:
+            cmd_args = [
+                sys.executable, "main.py",
+                "--experiment_name", "prompting",
+                "--configuration_name", "num_samples_1000",
+                "--experiment_type", "prompting",
+                "--factor", "golden_model",
+                "--dataset", ds,
+                "--model", m,
+                "--model_size", m_size,
+                "--full_test", "0",
+                "--num_labelled", "1000",
+                "--num_labelled_test", "1000",
+                "--batch_size", "8",
+                "--prompt_format", "0",
+                "--rskf_splits", str(cfg["rskf_splits"]),
+                "--rskf_repeats", "1",
+                "--rskf_seed", "27"
+            ]
+            commands.append({
+                "script_origin": "prompting-modern (run_experiments.py)",
+                "experiment_type": "prompting",
+                "experiment_name": "prompting",
+                "dataset": ds,
+                "model": m,
+                "model_size": m_size,
+                "num_labelled": 1000,
+                "configuration_name": "num_samples_1000",
+                "rskf_splits": cfg["rskf_splits"],
+                "rskf_repeats": 1,
+                "cmd_args": cmd_args,
+            })
+    return commands
+
+
+def generate_it_modern_commands() -> List[Dict[str, Any]]:
+    """Gera comandos de instruction tuning para os novos modelos"""
+    commands = []
+    datasets = ["sst2", "boolq", "ag_news", "snips"]
+    models = [
+        ("qwen", "4b"),
+        ("qwen", "9b"),
+        ("phi", "mini"),
+        ("gemma", "26b"),
+    ]
+
+    for ds in datasets:
+        cfg = DATASET_CONFIGS[ds]
+        for n in cfg["sizes"]:
+            for m, m_size in models:
+                cmd_args = [
+                    sys.executable, "main.py",
+                    "--experiment_name", "instruction_tuning",
+                    "--configuration_name", f"num_samples_{n}",
+                    "--experiment_type", "instruction_tuning",
+                    "--dataset", ds,
+                    "--model", m,
+                    "--model_size", m_size,
+                    "--num_labelled", str(n),
+                    "--num_labelled_test", "2000",
+                    "--batch_size", "4",
+                    "--num_epochs", "5",
+                    "--lr", "1e-5",
+                    "--max_len", "128",
+                    "--factor", "golden_model",
+                    "--rskf_splits", str(cfg["rskf_splits"]),
+                    "--rskf_repeats", "1",
+                    "--rskf_seed", "27"
+                ]
+                commands.append({
+                    "script_origin": "it-modern (run_experiments.py)",
+                    "experiment_type": "instruction_tuning",
+                    "experiment_name": "instruction_tuning",
+                    "dataset": ds,
+                    "model": m,
+                    "model_size": m_size,
+                    "num_labelled": n,
+                    "configuration_name": f"num_samples_{n}",
+                    "rskf_splits": cfg["rskf_splits"],
+                    "rskf_repeats": 1,
+                    "cmd_args": cmd_args,
+                })
+    return commands
+
+
 SCRIPTS_MAP = {
     "finetuning": generate_finetuning_commands,
     "icl": generate_icl_commands,
     "icl-llama3": generate_icl_llama3_commands,
+    "icl-modern": generate_icl_modern_commands,
     "it-flan-t5": generate_it_flan_t5_commands,
     "it-mistral-zephyr": generate_it_mistral_zephyr_commands,
+    "it-modern": generate_it_modern_commands,
     "prompting": generate_prompting_commands,
     "prompting-llama3": generate_prompting_llama3_commands,
+    "prompting-modern": generate_prompting_modern_commands,
 }
 
 
@@ -434,7 +584,11 @@ def main():
     parser.add_argument(
         "--script",
         default="all",
-        choices=["all", "finetuning", "icl", "icl-llama3", "it-flan-t5", "it-mistral-zephyr", "prompting", "prompting-llama3"],
+        choices=[
+            "all", "finetuning", "icl", "icl-llama3", "icl-modern",
+            "it-flan-t5", "it-mistral-zephyr", "it-modern",
+            "prompting", "prompting-llama3", "prompting-modern"
+        ],
         help="Qual script de experimento executar (default: all)."
     )
     parser.add_argument(

@@ -42,6 +42,12 @@ class PromptFormatter:
         name = name.lower()
         if "t5" in name:
             return "seq2seq"
+        elif "qwen" in name:
+            return "qwen"
+        elif "phi" in name:
+            return "phi"
+        elif "gemma" in name:
+            return "gemma"
         elif "llama-3" in name or "llama3" in name:
             return "llama3"
         elif "llama-2" in name or "llama2" in name:
@@ -159,6 +165,12 @@ class PromptFormatter:
 
         if self.model_family == "seq2seq":
             return self._format_seq2seq(sample_str, info, shots)
+        elif self.model_family == "qwen":
+            return self._format_qwen(sample_str, info, shots)
+        elif self.model_family == "phi":
+            return self._format_phi(sample_str, info, shots)
+        elif self.model_family == "gemma":
+            return self._format_gemma(sample_str, info, shots)
         elif self.model_family == "llama2":
             return self._format_llama2(sample_str, info, shots)
         elif self.model_family == "mistral":
@@ -194,6 +206,12 @@ class PromptFormatter:
         """
         if self.model_family == "seq2seq":
             return "Answer:"
+        elif self.model_family == "qwen":
+            return "<|im_start|>assistant\n"
+        elif self.model_family == "phi":
+            return "<|assistant|>\n"
+        elif self.model_family == "gemma":
+            return "<start_of_turn>model\n"
         elif self.model_family == "mistral":
             return "[/INST]"
         elif self.model_family == "zephyr":
@@ -283,6 +301,53 @@ class PromptFormatter:
                     f"{system_header}{sys_msg}{eot}"
                     f"{user_header}{user_input}{eot}"
                     f"{assistant_header}{label}{eot}"
+                )
+                final_prompts.append(full_text)
+            return final_prompts
+
+        elif self.model_family == "qwen":
+            sys_msg = f"You are a helpful assistant. Follow the instruction exactly. Determine the {task_type}."
+            for sample in samples:
+                text = sample[0].strip()
+                label = sample[1].strip()
+                if self.prompt_format == 0:
+                    user_input = f"{instruction}\n{sentence_start}: {text}\n{answer_start}: "
+                else:
+                    user_input = f"{text} {instruction}"
+                full_text = (
+                    f"<|im_start|>system\n{sys_msg}<|im_end|>\n"
+                    f"<|im_start|>user\n{user_input}<|im_end|>\n"
+                    f"<|im_start|>assistant\n{label}<|im_end|>"
+                )
+                final_prompts.append(full_text)
+            return final_prompts
+
+        elif self.model_family == "phi":
+            for sample in samples:
+                text = sample[0].strip()
+                label = sample[1].strip()
+                if self.prompt_format == 0:
+                    user_input = f"{instruction}\n{sentence_start}: {text}\n{answer_start}: "
+                else:
+                    user_input = f"{text} {instruction}"
+                full_text = (
+                    f"<|user|>\n{user_input}<|end|>\n"
+                    f"<|assistant|>\n{label}<|end|>"
+                )
+                final_prompts.append(full_text)
+            return final_prompts
+
+        elif self.model_family == "gemma":
+            for sample in samples:
+                text = sample[0].strip()
+                label = sample[1].strip()
+                if self.prompt_format == 0:
+                    user_input = f"{instruction}\n{sentence_start}: {text}\n{answer_start}: "
+                else:
+                    user_input = f"{text} {instruction}"
+                full_text = (
+                    f"<start_of_turn>user\n{user_input}<end_of_turn>\n"
+                    f"<start_of_turn>model\n{label}<end_of_turn>"
                 )
                 final_prompts.append(full_text)
             return final_prompts
@@ -494,3 +559,115 @@ class PromptFormatter:
             {"role": "system", "content": "You are a helpful assistant that follows all the instructions."},
             {"role": "user", "content": user_content},
         ]
+
+    def _format_qwen(self, sample: str, info: Dict[str, Any], shots: Optional[List[Tuple[str, str]]] = None) -> str:
+        instruction = info["instruction"]
+        task_type = info["task_type"]
+        options_str = info["options_str"]
+        s_start = info["sentence_start"]
+        prefix = f"{s_start}: " if s_start else ""
+
+        sys_msg = (
+            f"You are a helpful assistant. Your task is to determine the {task_type}. "
+            f"Answer with exactly one of these options: {options_str}. "
+            f"Do not explain. Answer only with the class name."
+        )
+
+        messages = [{"role": "system", "content": sys_msg}]
+        if shots and len(shots) > 0:
+            for s in shots:
+                if self.prompt_format == 0:
+                    u_content = f"{prefix}{s[0]}"
+                else:
+                    u_content = f"{s[0]} {instruction}"
+                messages.append({"role": "user", "content": u_content})
+                messages.append({"role": "assistant", "content": s[1]})
+
+        if self.prompt_format == 0:
+            q_content = f"Text: {sample}\nBased on the text above, determine the {task_type}. Answer:"
+        else:
+            q_content = f"{sample} {instruction} "
+        messages.append({"role": "user", "content": q_content})
+
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+        native_str = f"<|im_start|>system\n{sys_msg}<|im_end|>\n"
+        for i in range(1, len(messages) - 1, 2):
+            native_str += f"<|im_start|>user\n{messages[i]['content']}<|im_end|>\n<|im_start|>assistant\n{messages[i+1]['content']}<|im_end|>\n"
+        native_str += f"<|im_start|>user\n{messages[-1]['content']}<|im_end|>\n<|im_start|>assistant\n"
+        return native_str
+
+    def _format_phi(self, sample: str, info: Dict[str, Any], shots: Optional[List[Tuple[str, str]]] = None) -> str:
+        instruction = info["instruction"]
+        task_type = info["task_type"]
+        options_str = info["options_str"]
+        s_start = info["sentence_start"]
+        prefix = f"{s_start}: " if s_start else ""
+
+        instruction_text = (
+            f"Determine the {task_type}. Options: {options_str}. "
+            f"Answer only with the class name."
+        )
+
+        messages = []
+        if shots and len(shots) > 0:
+            for s in shots:
+                if self.prompt_format == 0:
+                    u_content = f"{instruction_text}\n{prefix}{s[0]}"
+                else:
+                    u_content = f"{s[0]} {instruction}"
+                messages.append({"role": "user", "content": u_content})
+                messages.append({"role": "assistant", "content": s[1]})
+
+        if self.prompt_format == 0:
+            q_content = f"{instruction_text}\n{prefix}{sample}"
+        else:
+            q_content = f"{sample} {instruction}"
+        messages.append({"role": "user", "content": q_content})
+
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+        native_str = ""
+        for i in range(0, len(messages) - 1, 2):
+            native_str += f"<|user|>\n{messages[i]['content']}<|end|>\n<|assistant|>\n{messages[i+1]['content']}<|end|>\n"
+        native_str += f"<|user|>\n{messages[-1]['content']}<|end|>\n<|assistant|>\n"
+        return native_str
+
+    def _format_gemma(self, sample: str, info: Dict[str, Any], shots: Optional[List[Tuple[str, str]]] = None) -> str:
+        instruction = info["instruction"]
+        task_type = info["task_type"]
+        options_str = info["options_str"]
+        s_start = info["sentence_start"]
+        prefix = f"{s_start}: " if s_start else ""
+
+        instruction_text = (
+            f"Analyze the text to determine the {task_type}. Options: {options_str}. "
+            f"Answer only with the exact class name."
+        )
+
+        messages = []
+        if shots and len(shots) > 0:
+            for s in shots:
+                if self.prompt_format == 0:
+                    u_content = f"{instruction_text}\n{prefix}{s[0]}"
+                else:
+                    u_content = f"{s[0]} {instruction}"
+                messages.append({"role": "user", "content": u_content})
+                messages.append({"role": "assistant", "content": s[1]})
+
+        if self.prompt_format == 0:
+            q_content = f"{instruction_text}\n{prefix}{sample}"
+        else:
+            q_content = f"{sample} {instruction}"
+        messages.append({"role": "user", "content": q_content})
+
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+        native_str = ""
+        for i in range(0, len(messages) - 1, 2):
+            native_str += f"<start_of_turn>user\n{messages[i]['content']}<end_of_turn>\n<start_of_turn>model\n{messages[i+1]['content']}<end_of_turn>\n"
+        native_str += f"<start_of_turn>user\n{messages[-1]['content']}<end_of_turn>\n<start_of_turn>model\n"
+        return native_str

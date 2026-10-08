@@ -28,10 +28,12 @@ except ImportError:
 
 
 try:
-    from transformers import BertModel, RobertaModel
+    from transformers import BertModel, RobertaModel, AutoModel, DebertaV2Model
 except ImportError:
     BertModel = None
     RobertaModel = None
+    AutoModel = None
+    DebertaV2Model = None
 
 
 
@@ -120,6 +122,38 @@ class RoBERTaBase(nn.Module, DeterministicModel):
         )
         with self.dropout_stream:
             output = self.dropout(bert_output)
+        output = self.output(output)
+        self.dropout_states = self.dropout_stream._state
+        return output
+
+
+class DeBERTaBase(nn.Module, DeterministicModel):
+
+    def __init__(self, n_classes, init_seed=0, dropout_seed=0, trainable=True):
+        self.name = 'deberta-v3-base'
+        super(DeBERTaBase, self).__init__()
+        DeterministicModel.__init__(self, dropout_seed=dropout_seed)
+
+        with RNGController.isolate(init_seed):
+            loader = AutoModel or DebertaV2Model
+            self.deberta = loader.from_pretrained('microsoft/deberta-v3-base', use_safetensors=True, return_dict=False)
+            if not trainable:
+                for param in self.deberta.parameters():
+                    param.requires_grad = False
+            self.dropout = torch.nn.Dropout(p=0.3)
+            self.output = torch.nn.Linear(self.deberta.config.hidden_size, n_classes)
+
+        self.dropout_states = self.dropout_stream._state
+
+    def forward(self, input_ids, attention_mask, token_type_ids=None):
+        kwargs = {'input_ids': input_ids, 'attention_mask': attention_mask}
+        if token_type_ids is not None:
+            kwargs['token_type_ids'] = token_type_ids
+        outputs = self.deberta(**kwargs)
+        # Extract [CLS] token representation at position 0
+        cls_output = outputs[0][:, 0, :]
+        with self.dropout_stream:
+            output = self.dropout(cls_output)
         output = self.output(output)
         self.dropout_states = self.dropout_stream._state
         return output

@@ -276,7 +276,65 @@ class TestDataKeywordsDelegation(unittest.TestCase):
                     sys.modules.pop(mod, None)
 
 
+class TestModernModelPrompting(unittest.TestCase):
+    """Verifies PromptFormatter correctly supports modern models (Qwen, Phi, Gemma)."""
+
+    def test_qwen_formatting(self):
+        prompter = PromptFormatter(model_name="qwen_4b", prompt_format=0)
+        self.assertEqual(prompter.model_family, "qwen")
+        self.assertEqual(prompter.get_response_template(), "<|im_start|>assistant\n")
+
+        # Zero-shot
+        prompt = prompter.format("Great movie!", dataset_name="sst2")
+        self.assertIn("<|im_start|>user", prompt)
+        self.assertIn("Great movie!", prompt)
+        self.assertIn("<|im_start|>assistant", prompt)
+
+        # Few-shot ICL
+        shots = [("Bad film", "negative")]
+        icl_prompt = prompter.format("Loved it", dataset_name="sst2", shots=shots)
+        self.assertIn("Bad film", icl_prompt)
+        self.assertIn("Loved it", icl_prompt)
+
+        # SFT instruction tuning
+        sft_samples = [("Great movie!", "positive")]
+        sft_prompts = prompter.format_instruction_tuning(sft_samples, dataset_name="sst2")
+        self.assertEqual(len(sft_prompts), 1)
+        self.assertIn("<|im_start|>assistant\npositive<|im_end|>", sft_prompts[0])
+
+    def test_phi_formatting(self):
+        prompter = PromptFormatter(model_name="phi_mini", prompt_format=0)
+        self.assertEqual(prompter.model_family, "phi")
+        self.assertEqual(prompter.get_response_template(), "<|assistant|>\n")
+
+        # Zero-shot
+        prompt = prompter.format("Awesome acting!", dataset_name="sst2")
+        self.assertIn("<|user|>", prompt)
+        self.assertIn("<|assistant|>", prompt)
+
+        # SFT instruction tuning
+        sft_samples = [("Awesome acting!", "positive")]
+        sft_prompts = prompter.format_instruction_tuning(sft_samples, dataset_name="sst2")
+        self.assertIn("<|assistant|>\npositive<|end|>", sft_prompts[0])
+
+    def test_gemma_formatting(self):
+        prompter = PromptFormatter(model_name="gemma_26b", prompt_format=0)
+        self.assertEqual(prompter.model_family, "gemma")
+        self.assertEqual(prompter.get_response_template(), "<start_of_turn>model\n")
+
+        # Zero-shot
+        prompt = prompter.format("Terrible plot.", dataset_name="sst2")
+        self.assertIn("<start_of_turn>user", prompt)
+        self.assertIn("<start_of_turn>model", prompt)
+
+        # SFT instruction tuning
+        sft_samples = [("Terrible plot.", "negative")]
+        sft_prompts = prompter.format_instruction_tuning(sft_samples, dataset_name="sst2")
+        self.assertIn("<start_of_turn>model\nnegative<end_of_turn>", sft_prompts[0])
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 

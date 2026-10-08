@@ -142,11 +142,15 @@ class _CausalLMAdapter:
 
         terminators = []
         if hasattr(self.tokenizer, 'eos_token_id') and self.tokenizer.eos_token_id is not None:
-            terminators.append(self.tokenizer.eos_token_id)
+            if isinstance(self.tokenizer.eos_token_id, list):
+                terminators.extend(self.tokenizer.eos_token_id)
+            else:
+                terminators.append(self.tokenizer.eos_token_id)
         if hasattr(self.tokenizer, 'convert_tokens_to_ids'):
-            eot_id = self.tokenizer.convert_tokens_to_ids("<|eot_id|>")
-            if eot_id is not None and eot_id not in terminators:
-                terminators.append(eot_id)
+            for t_token in ("<|eot_id|>", "<|im_end|>", "<|end|>", "<end_of_turn>"):
+                tid = self.tokenizer.convert_tokens_to_ids(t_token)
+                if tid is not None and not isinstance(tid, str) and tid not in terminators:
+                    terminators.append(tid)
 
         shots = getattr(dataset, 'context_samples', None) if mode == 'icl' else None
         dataset_name = getattr(dataset, 'dataset_name', 'sst2')
@@ -366,10 +370,16 @@ class ModelEvaluator:
                 prompter=self.prompter,
                 prompt_format=self.prompt_format
             )
-        elif any(fam in self.model_name for fam in ('llama3', 'mistral', 'zephyr', 'llama2')):
-            family = 'llama3' if 'llama3' in self.model_name else (
-                'mistral' if 'mistral' in self.model_name else (
-                    'zephyr' if 'zephyr' in self.model_name else 'llama2'
+        elif any(fam in self.model_name for fam in ('llama3', 'mistral', 'zephyr', 'llama2', 'qwen', 'phi', 'gemma')):
+            family = 'qwen' if 'qwen' in self.model_name else (
+                'phi' if 'phi' in self.model_name else (
+                    'gemma' if 'gemma' in self.model_name else (
+                        'llama3' if 'llama3' in self.model_name else (
+                            'mistral' if 'mistral' in self.model_name else (
+                                'zephyr' if 'zephyr' in self.model_name else 'llama2'
+                            )
+                        )
+                    )
                 )
             )
             return _CausalLMAdapter(

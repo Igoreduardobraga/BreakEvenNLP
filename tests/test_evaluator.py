@@ -389,6 +389,42 @@ class TestModelEvaluatorAPI(unittest.TestCase):
         self.assertEqual(res.inputs[1], "I hate this")
         self.assertIn("I love this", res.prompts[0])
 
+    def test_modern_models_adapter_dispatch(self):
+        """Verifies ModelEvaluator resolves qwen, phi, and gemma correctly into CausalLM adapter."""
+        for m_name in ('qwen_4b', 'qwen_9b', 'phi_mini', 'gemma_26b'):
+            evaluator = ModelEvaluator(
+                model=DummyCausalModel(generated_tokens_per_call=[[20]]),
+                tokenizer=DummyCausalTokenizer(),
+                model_name=m_name,
+                batch_size=1
+            )
+            expected_family = 'qwen' if 'qwen' in m_name else ('phi' if 'phi' in m_name else 'gemma')
+            self.assertEqual(evaluator.adapter.model_family, expected_family)
+
+    def test_deberta_base_forward_shape(self):
+        """Verifies DeBERTaBase forward pass extracts [CLS] at index 0 and outputs logits of shape (batch, n_classes)."""
+        import torch
+        from transfer_learning.models import DeBERTaBase
+
+        class DummyBackbone(torch.nn.Module):
+            def __init__(self, hidden_size):
+                super().__init__()
+                self.config = type('Config', (), {'hidden_size': hidden_size})()
+            def forward(self, input_ids, attention_mask=None, token_type_ids=None):
+                return [torch.randn(input_ids.shape[0], input_ids.shape[1], self.config.hidden_size)]
+
+        # Instantiate DeBERTaBase and mock backbone for deterministic fast execution
+        model = DeBERTaBase(n_classes=3, init_seed=42)
+        hidden_size = model.deberta.config.hidden_size
+        model.deberta = DummyBackbone(hidden_size)
+
+        dummy_ids = torch.ones(2, 4, dtype=torch.long)
+        dummy_mask = torch.ones(2, 4, dtype=torch.long)
+        dummy_types = torch.zeros(2, 4, dtype=torch.long)
+
+        logits = model(dummy_ids, dummy_mask, dummy_types)
+        self.assertEqual(logits.shape, (2, 3))
+
 
 if __name__ == '__main__':
     unittest.main()
