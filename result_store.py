@@ -36,6 +36,9 @@ SUMMARY_COLUMNS = [
     "co2_kg",
     "hardware",
     "carbon_intensity",
+    "engine",
+    "quant_format",
+    "decoding",
     "timestamp",
     "git_commit",
 ]
@@ -306,6 +309,9 @@ class ResultStore:
         co2_kg: Optional[float] = None,
         hardware: Optional[str] = None,
         carbon_intensity: Optional[float] = None,
+        engine: Optional[str] = None,
+        quant_format: Optional[str] = None,
+        decoding: Optional[str] = None,
     ) -> None:
         """Atomically records the outcome of a single fold into summary/prediction tables and legacy JSON."""
         ts = timestamp or datetime.now(timezone.utc).isoformat()
@@ -338,6 +344,9 @@ class ResultStore:
             "co2_kg": co2_kg if co2_kg is not None else "",
             "hardware": hardware or "",
             "carbon_intensity": carbon_intensity if carbon_intensity is not None else "",
+            "engine": engine or "hf",
+            "quant_format": quant_format or "",
+            "decoding": decoding or "free",
             "timestamp": ts,
             "git_commit": self._git_commit,
         }
@@ -443,6 +452,9 @@ class ResultStore:
                 co2_kg=co2_kg,
                 hardware=hardware,
                 carbon_intensity=carbon_intensity,
+                engine=engine,
+                quant_format=quant_format,
+                decoding=decoding,
             )
 
     def _write_legacy_json(
@@ -461,6 +473,9 @@ class ResultStore:
         co2_kg: Optional[float] = None,
         hardware: Optional[str] = None,
         carbon_intensity: Optional[float] = None,
+        engine: Optional[str] = None,
+        quant_format: Optional[str] = None,
+        decoding: Optional[str] = None,
     ) -> None:
         fold_dir = self.results_path / f"repeat_{repeat}_fold_{fold}"
         fold_dir.mkdir(parents=True, exist_ok=True)
@@ -495,6 +510,11 @@ class ResultStore:
             "co2_kg": co2_kg,
             "hardware": hardware,
             "carbon_intensity": carbon_intensity,
+        }
+        legacy_dict["execution"] = {
+            "engine": engine or "hf",
+            "quant_format": quant_format,
+            "decoding": decoding or "free",
         }
 
         with tempfile.NamedTemporaryFile("w", dir=fold_dir, delete=False, encoding="utf-8") as tf:

@@ -91,22 +91,40 @@ def prompt_icl_experiment(randomness_factor_seeds, model, tokenizer, experiment=
     mode = 'icl' if 'icl' in experiment else 'prompting'
     partial_path = os.path.join(investigation_path, 'partial') if investigation_path else None
 
-    evaluator = ModelEvaluator(
-        model=model,
-        tokenizer=tokenizer,
-        model_name=MODEL,
-        batch_size=BATCH_SIZE if MODEL == 'flan-t5' else 1,
-        prompt_format=PROMPT_FORMAT,
-        max_new_tokens=10,
-        generation_config=getattr(model, 'generation_config', None) if model is not None else None,
-        device=device
-    )
-    return evaluator.evaluate(dataset, mode=mode, partial_save_path=partial_path)
+    if ENGINE == 'vllm':
+        evaluator = ModelEvaluator(
+            model=model_name,
+            tokenizer=None,
+            model_name=MODEL,
+            batch_size=BATCH_SIZE,
+            prompt_format=PROMPT_FORMAT,
+            max_new_tokens=10,
+            engine='vllm',
+            seed=randomness_factor_seeds['model_randomness'],
+        )
+    else:
+        evaluator = ModelEvaluator(
+            model=model,
+            tokenizer=tokenizer,
+            model_name=MODEL,
+            batch_size=BATCH_SIZE if MODEL == 'flan-t5' else 1,
+            prompt_format=PROMPT_FORMAT,
+            max_new_tokens=10,
+            generation_config=getattr(model, 'generation_config', None) if model is not None else None,
+            device=device
+        )
+    return evaluator.evaluate(dataset, mode=mode, partial_save_path=partial_path, decoding=DECODING)
 
 
 
 def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer, investigation_path,
                                   train_test_indices=None):
+    if ENGINE == 'vllm':
+        raise NotImplementedError(
+            "vLLM engine does not yet support evaluating in-memory tuned models. "
+            "Run instruction_tuning with --engine hf, or save the merged model "
+            "and evaluate it via --experiment_type icl/prompting --engine vllm."
+        )
     dataset = InstructionTuningDataset(
         dataset_name=DATASET,
         train_size=args.train_size,
@@ -406,6 +424,8 @@ parser.add_argument('--lr', default=1e-5, type=float)
 parser.add_argument('--num_epochs', default=5, type=int, help='Total number of epochs to train for')
 parser.add_argument('--max_len', default=20, type=int, help='Maximal length of input for fine-tuning experiments')
 parser.add_argument('--prompt_format', default=0, type=int, help='Which prompt format to use')
+parser.add_argument('--engine', default='hf', type=str, choices=['hf', 'vllm'], help='Inference engine for prompting/icl (vllm: offline vLLM, causal models only)')
+parser.add_argument('--decoding', default='free', type=str, choices=['free', 'guided'], help='Decoding constraint (guided requires --engine vllm)')
 # K Fold
 parser.add_argument('--rskf_splits', default=10, type=int, help='Number of folds for RepeatedStratifiedKFold (K).')
 parser.add_argument('--rskf_repeats', default=1, type=int, help='Number of repeats for RepeatedStratifiedKFold (R).')
@@ -448,6 +468,12 @@ MODEL = args.model
 MODEL_SIZE = args.model_size
 FACTOR = args.factor
 DATASET = args.dataset
+ENGINE = args.engine
+DECODING = args.decoding
+if DECODING == 'guided' and ENGINE != 'vllm':
+    parser.error("--decoding guided requires --engine vllm")
+if ENGINE == 'vllm' and EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
+    parser.error("--engine vllm does not support instruction_tuning (in-memory tuned model)")
 RESULTS_PATH = os.path.join('results', f'{args.experiment_name}', f'{EXPERIMENT_TYPE}_{MODEL}_{MODEL_SIZE}', args.configuration_name, DATASET, FACTOR)
 if not os.path.exists(RESULTS_PATH):
     os.makedirs(RESULTS_PATH)
@@ -468,7 +494,15 @@ elif EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
 elif EXPERIMENT_TYPE in ('icl', 'prompting', 'icl_similarity'):
     model_name = ICL_MODELS[f'{MODEL}_{MODEL_SIZE}']
 
-    if MODEL == 'llama2':
+    if ENGINE == 'vllm':
+        # Weights load inside _VLLMAdapter; keep only the HF id here so a
+        # second copy never sits in VRAM. Fail fast for unsupported families.
+        if ModelEvaluator._causal_family_for(MODEL) is None:
+            parser.error(f"--engine vllm supports causal families only, not '{MODEL}'")
+        model = None
+        tokenizer = None
+
+    elif MODEL == 'llama2':
         access_token = os.environ['HUGGINGFACE_TOKEN']
         tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True, token=access_token)
         
@@ -621,6 +655,13 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
         co2_kg=sust_report.co2_kg,
         hardware=sust_report.hardware,
         carbon_intensity=sust_report.carbon_intensity,
+        engine=ENGINE,
+        quant_format=(
+            'bitsandbytes' if ENGINE == 'vllm'
+            else ('fp32' if MODEL == 'flan-t5'
+                  else ('api' if MODEL == 'chatgpt' else 'bnb-4bit-nf4'))
+        ),
+        decoding=DECODING,
     )
       
     # Clean checkpoints  

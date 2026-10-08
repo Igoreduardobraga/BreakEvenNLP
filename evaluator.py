@@ -323,6 +323,104 @@ class _APIAdapter:
         return EvaluationResult(golden, predicted, decodeds, prompts=prompts, inputs=inputs)
 
 
+class _VLLMAdapter:
+    """Offline vLLM adapter for causal models (Q6: em-processo, mesma costura).
+
+    Requires `vllm` + `vllm-bnb-plugin` (optional group: `uv sync --group vllm`).
+    Greedy decoding (temperature=0) with vLLM-level seed preserves the
+    determinism contract; parity with the HF path is gated by
+    tests/test_vllm_parity.py (Q2/Q9).
+    """
+
+    # Conservative per-family budgets for a 24GB RTX 4090 (Q8).
+    BUDGETS = {
+        'llama2': {'gpu_memory_utilization': 0.85, 'max_model_len': 2048, 'max_num_seqs': 16},
+        'llama3': {'gpu_memory_utilization': 0.85, 'max_model_len': 2048, 'max_num_seqs': 32},
+        'mistral': {'gpu_memory_utilization': 0.85, 'max_model_len': 2048, 'max_num_seqs': 32},
+        'zephyr': {'gpu_memory_utilization': 0.85, 'max_model_len': 2048, 'max_num_seqs': 32},
+        'qwen': {'gpu_memory_utilization': 0.85, 'max_model_len': 2048, 'max_num_seqs': 32},
+        'phi': {'gpu_memory_utilization': 0.85, 'max_model_len': 2048, 'max_num_seqs': 32},
+        'gemma': {'gpu_memory_utilization': 0.90, 'max_model_len': 1024, 'max_num_seqs': 8},
+    }
+
+    QUANT_FORMAT = "bitsandbytes"
+
+    def __init__(self, model_id, model_family, prompter=None, prompt_format=0,
+                 max_new_tokens=10, seed=0, quantization="bitsandbytes",
+                 budget_override=None):
+        try:
+            from vllm import LLM  # noqa: F401
+        except ImportError as e:
+            raise ImportError(
+                "vLLM engine requires 'vllm' and 'vllm-bnb-plugin' "
+                "(install with: uv sync --group vllm)."
+            ) from e
+        from vllm import LLM
+        self.model_id = model_id
+        self.model_family = model_family
+        self.max_new_tokens = max_new_tokens
+        self.seed = seed
+        self.quantization = quantization
+        self.quant_format = self.QUANT_FORMAT if quantization else "none"
+        budget = dict(self.BUDGETS.get(model_family, self.BUDGETS['llama3']))
+        if budget_override:
+            budget.update(budget_override)
+        self.budget = budget
+        self.llm = LLM(
+            model=model_id,
+            quantization=quantization,
+            dtype="bfloat16",
+            seed=seed,
+            **budget
+        )
+        self.prompter = prompter or PromptFormatter(model_name=model_family, prompt_format=prompt_format)
+        try:
+            self.prompter.tokenizer = self.llm.get_tokenizer()
+        except Exception:
+            pass
+
+    def evaluate(self, dataset, mode='prompting', decoding='free'):
+        from vllm import SamplingParams
+        if decoding not in ('free', 'guided'):
+            raise ValueError(f"Unknown decoding '{decoding}'. Use 'free' or 'guided'.")
+        shots = getattr(dataset, 'context_samples', None) if mode == 'icl' else None
+        dataset_name = getattr(dataset, 'dataset_name', 'sst2')
+        custom_inst = getattr(dataset, 'instructions', None)
+
+        test_texts, test_labels = [], []
+        for data, labels in dataset.batch_data_for_evaluation(1):
+            test_texts.extend(data)
+            test_labels.extend(labels)
+
+        params = SamplingParams(
+            temperature=0.0,
+            max_tokens=self.max_new_tokens,
+            seed=self.seed,
+            **({'guided_choice': list(dataset.classes)} if decoding == 'guided' else {})
+        )
+        prompts = [
+            self._to_string(self.prompter.format(
+                sample, dataset_name=dataset_name, classes=dataset.classes,
+                shots=shots, custom_instruction=custom_inst))
+            for sample in test_texts
+        ]
+        outputs = self.llm.generate(prompts, params)
+
+        golden, predicted, decodeds = [], [], []
+        for sample, label, out in zip(test_texts, test_labels, outputs):
+            decoded = out.outputs[0].text.strip()
+            decodeds.append(decoded)
+            predicted.append(_parse_results(decoded, dataset.classes))
+            golden.append(label)
+        return EvaluationResult(golden, predicted, decodeds, prompts=prompts, inputs=test_texts)
+
+    @staticmethod
+    def _to_string(formatted):
+        if isinstance(formatted, str):
+            return formatted
+        return str(formatted)
+
+
 class ModelEvaluator:
     """
     Deep ModelEvaluator module presenting a single, uniform interface
@@ -338,7 +436,10 @@ class ModelEvaluator:
         prompt_format: int = 0,
         max_new_tokens: int = 10,
         generation_config=None,
-        device: str = "cuda"
+        device: str = "cuda",
+        engine: str = "hf",
+        seed: int = 0,
+        vllm_kwargs=None
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -348,11 +449,43 @@ class ModelEvaluator:
         self.max_new_tokens = max_new_tokens
         self.generation_config = generation_config
         self.device = device
+        self.engine = engine
+        self.seed = seed
+        self.vllm_kwargs = vllm_kwargs or {}
+        if engine not in ('hf', 'vllm'):
+            raise ValueError(f"Unknown engine '{engine}'. Use 'hf' or 'vllm'.")
         self.prompter = PromptFormatter(model_name=self.model_name, prompt_format=self.prompt_format, tokenizer=self.tokenizer)
 
         self.adapter = self._resolve_adapter()
 
+    @property
+    def quant_format(self) -> str:
+        if self.engine == 'vllm':
+            return getattr(self.adapter, 'quant_format', 'bitsandbytes')
+        if 'flan-t5' in self.model_name:
+            return 'fp32'
+        if 'chatgpt' in self.model_name:
+            return 'api'
+        return 'bnb-4bit-nf4'
+
     def _resolve_adapter(self):
+        if self.engine == 'vllm':
+            family = self._causal_family()
+            if family is None:
+                raise NotImplementedError(
+                    f"vLLM engine supports causal families only; '{self.model_name}' "
+                    "must use engine='hf'."
+                )
+            model_id = self.model if isinstance(self.model, str) else self.model_name
+            return _VLLMAdapter(
+                model_id=model_id,
+                model_family=family,
+                prompter=self.prompter,
+                prompt_format=self.prompt_format,
+                max_new_tokens=self.max_new_tokens,
+                seed=self.seed,
+                **self.vllm_kwargs
+            )
         if 'flan-t5' in self.model_name:
             return _Seq2SeqAdapter(
                 model=self.model,
@@ -370,18 +503,8 @@ class ModelEvaluator:
                 prompter=self.prompter,
                 prompt_format=self.prompt_format
             )
-        elif any(fam in self.model_name for fam in ('llama3', 'mistral', 'zephyr', 'llama2', 'qwen', 'phi', 'gemma')):
-            family = 'qwen' if 'qwen' in self.model_name else (
-                'phi' if 'phi' in self.model_name else (
-                    'gemma' if 'gemma' in self.model_name else (
-                        'llama3' if 'llama3' in self.model_name else (
-                            'mistral' if 'mistral' in self.model_name else (
-                                'zephyr' if 'zephyr' in self.model_name else 'llama2'
-                            )
-                        )
-                    )
-                )
-            )
+        elif self._causal_family() is not None:
+            family = self._causal_family()
             return _CausalLMAdapter(
                 model=self.model,
                 tokenizer=self.tokenizer,
@@ -396,21 +519,37 @@ class ModelEvaluator:
         else:
             raise NotImplementedError(f"Model family for '{self.model_name}' not yet supported in ModelEvaluator.")
 
-    def evaluate(self, dataset, mode: str = 'prompting', partial_save_path=None):
-        """
-        Evaluates the model on the provided dataset.
-        
+    @staticmethod
+    def _causal_family_for(name: str):
+        for fam in ('qwen', 'phi', 'gemma', 'llama3', 'mistral', 'zephyr', 'llama2'):
+            if fam in name:
+                return fam
+        return None
+
+    def _causal_family(self):
+        return self._causal_family_for(self.model_name)
+
+    def evaluate(self, dataset, mode: str = 'prompting', partial_save_path=None, decoding: str = 'free'):
+        """Evaluates the model on the provided dataset.
+
         Args:
             dataset: A dataset object providing `batch_data_for_evaluation`, `classes`, and prompt metadata.
             mode: Operating mode ('prompting' for zero-shot, 'icl' for in-context learning).
             partial_save_path: Optional path to save and resume partial results (for API models).
-            
+            decoding: 'free' (unconstrained) or 'guided' (vLLM guided_choice only).
+
         Returns:
             Tuple of (golden_labels, predicted_labels, decoded_texts).
         """
         if mode not in ('prompting', 'icl'):
             raise ValueError(f"Unknown evaluation mode '{mode}'. Supported modes: 'prompting', 'icl'.")
+        if decoding not in ('free', 'guided'):
+            raise ValueError(f"Unknown decoding '{decoding}'. Use 'free' or 'guided'.")
+        if decoding == 'guided' and not isinstance(self.adapter, _VLLMAdapter):
+            raise ValueError("Guided decoding is only available via the vLLM engine (Q14).")
 
         if isinstance(self.adapter, _APIAdapter):
             return self.adapter.evaluate(dataset, mode=mode, partial_save_path=partial_save_path)
+        if isinstance(self.adapter, _VLLMAdapter):
+            return self.adapter.evaluate(dataset, mode=mode, decoding=decoding)
         return self.adapter.evaluate(dataset, mode=mode)

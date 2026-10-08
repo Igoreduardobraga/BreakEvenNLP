@@ -642,8 +642,22 @@ def main():
         type=str,
         help="Diretório onde os logs individuais serão salvos (default: logs/)."
     )
+    parser.add_argument(
+        "--engine",
+        default="hf",
+        choices=["hf", "vllm"],
+        help="Motor de inferência repassado ao main.py (default: hf)."
+    )
+    parser.add_argument(
+        "--decoding",
+        default="free",
+        choices=["free", "guided"],
+        help="Decoding repassado ao main.py; guided exige --engine vllm."
+    )
 
     args = parser.parse_args()
+    if args.decoding == "guided" and args.engine != "vllm":
+        parser.error("--decoding guided requires --engine vllm")
 
     # 1. Coleta os comandos originais
     all_experiments: List[Dict[str, Any]] = []
@@ -660,6 +674,11 @@ def main():
             continue
         if args.models and exp["model"] not in args.models:
             continue
+        if exp["experiment_type"] in ("prompting", "icl", "icl_similarity"):
+            exp["cmd_args"] = list(exp["cmd_args"]) + [
+                "--engine", args.engine, "--decoding", args.decoding]
+            exp["engine"] = args.engine
+            exp["decoding"] = args.decoding
         filtered_experiments.append(exp)
 
     total_found = len(filtered_experiments)

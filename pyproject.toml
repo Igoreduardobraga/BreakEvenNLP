@@ -36,6 +36,12 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
 ]
+# Inference engine for the 4090 machine only (NOT installed by default):
+# uv sync --group vllm
+vllm = [
+    "vllm>=0.11",
+    "vllm-bnb-plugin",
+]
 
 [tool.uv]                                                                                                                                                                                      
 package = false
