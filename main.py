@@ -304,7 +304,10 @@ def make_train_val_loaders(dataset, batch_size, shuffle_seed):
     return train_loader, val_loader
 
 def ft_experiment(randomness_factor_seeds, train_test_indices=None):
-    tokenizer = AutoTokenizer.from_pretrained(model_name, return_dict=False)
+    # DeBERTa-v3 uses SentencePiece: the fast tokenizer conversion drops byte
+    # fallback (unknown tokens instead of byte pieces), so use the slow one.
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name, return_dict=False, use_fast=(MODEL != 'deberta'))
     dataset = FineTuningDataset(
         dataset_name=DATASET,
         train_size=args.train_size,
