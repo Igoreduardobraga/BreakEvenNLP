@@ -32,6 +32,10 @@ SUMMARY_COLUMNS = [
     "f1_prompting",
     "f1_macro_icl",
     "duration_seconds",
+    "energy_kwh",
+    "co2_kg",
+    "hardware",
+    "carbon_intensity",
     "timestamp",
     "git_commit",
 ]
@@ -250,7 +254,8 @@ class ResultStore:
             "sample_order_seed", "model_initialisation_seed", "model_randomness_seed",
             "prompt_format",
         }
-        float_cols = {"f1_macro", "f1_prompting", "f1_macro_icl", "duration_seconds"}
+        float_cols = {"f1_macro", "f1_prompting", "f1_macro_icl", "duration_seconds",
+                      "energy_kwh", "co2_kg", "carbon_intensity"}
 
         for k, v in raw_row.items():
             if v == "" or v is None:
@@ -297,9 +302,17 @@ class ResultStore:
         timestamp: Optional[str] = None,
         inputs: Optional[List[Any]] = None,
         prompts: Optional[List[str]] = None,
+        energy_kwh: Optional[float] = None,
+        co2_kg: Optional[float] = None,
+        hardware: Optional[str] = None,
+        carbon_intensity: Optional[float] = None,
     ) -> None:
         """Atomically records the outcome of a single fold into summary/prediction tables and legacy JSON."""
         ts = timestamp or datetime.now(timezone.utc).isoformat()
+        if energy_kwh is None:
+            energy_kwh = metrics.get("energy_kwh")
+        if co2_kg is None:
+            co2_kg = metrics.get("co2_kg")
 
         row: Dict[str, Any] = {
             "experiment_name": self.experiment_name,
@@ -321,6 +334,10 @@ class ResultStore:
             "f1_prompting": metrics.get("f1_prompting", ""),
             "f1_macro_icl": metrics.get("f1_macro_icl", ""),
             "duration_seconds": round(duration_seconds, 4) if duration_seconds is not None else "",
+            "energy_kwh": energy_kwh if energy_kwh is not None else "",
+            "co2_kg": co2_kg if co2_kg is not None else "",
+            "hardware": hardware or "",
+            "carbon_intensity": carbon_intensity if carbon_intensity is not None else "",
             "timestamp": ts,
             "git_commit": self._git_commit,
         }
@@ -422,6 +439,10 @@ class ResultStore:
                 decodeds=decodeds,
                 inputs=inputs,
                 prompts=prompts,
+                energy_kwh=energy_kwh,
+                co2_kg=co2_kg,
+                hardware=hardware,
+                carbon_intensity=carbon_intensity,
             )
 
     def _write_legacy_json(
@@ -436,6 +457,10 @@ class ResultStore:
         decodeds: Optional[List[str]] = None,
         inputs: Optional[List[Any]] = None,
         prompts: Optional[List[str]] = None,
+        energy_kwh: Optional[float] = None,
+        co2_kg: Optional[float] = None,
+        hardware: Optional[str] = None,
+        carbon_intensity: Optional[float] = None,
     ) -> None:
         fold_dir = self.results_path / f"repeat_{repeat}_fold_{fold}"
         fold_dir.mkdir(parents=True, exist_ok=True)
@@ -465,6 +490,12 @@ class ResultStore:
             legacy_dict["inputs"] = inputs
         if prompts is not None:
             legacy_dict["prompts"] = prompts
+        legacy_dict["sustainability"] = {
+            "energy_kwh": energy_kwh,
+            "co2_kg": co2_kg,
+            "hardware": hardware,
+            "carbon_intensity": carbon_intensity,
+        }
 
         with tempfile.NamedTemporaryFile("w", dir=fold_dir, delete=False, encoding="utf-8") as tf:
             tmp_path = Path(tf.name)

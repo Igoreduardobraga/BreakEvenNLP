@@ -8,6 +8,7 @@ from evaluator import ModelEvaluator, _parse_results as parse_results, Evaluatio
 from prompter import PromptFormatter
 from rng import RNGController, RNGStream
 from result_store import ResultStore
+from sustainability import SustainabilityTracker
 import re
 import random
 import pickle
@@ -565,7 +566,8 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
         isolated_factor=FACTOR
     )
 
-    fold_start_time = time.time()
+    fold_tracker = SustainabilityTracker()
+    fold_tracker.start()
 
     if EXPERIMENT_TYPE in ['finetuning']:
         print('Running fine-tuning experiments!')
@@ -598,7 +600,8 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
         f1_macro = compute_macro_f1(golden, predicted, failed_label=-1)
         metrics = {'f1_macro': float(f1_macro)}
 
-    duration = time.time() - fold_start_time
+    sust_report = fold_tracker.stop()
+    duration = sust_report.duration_seconds
     if 'f1_macro' in metrics:
         print(metrics['f1_macro'])
 
@@ -614,6 +617,10 @@ for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples)
         duration_seconds=duration,
         inputs=inputs,
         prompts=prompts,
+        energy_kwh=sust_report.energy_kwh,
+        co2_kg=sust_report.co2_kg,
+        hardware=sust_report.hardware,
+        carbon_intensity=sust_report.carbon_intensity,
     )
       
     # Clean checkpoints  
