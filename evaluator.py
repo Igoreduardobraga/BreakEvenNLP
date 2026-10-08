@@ -353,7 +353,8 @@ class _VLLMAdapter:
         except ImportError as e:
             raise ImportError(
                 "vLLM engine requires 'vllm' and 'vllm-bnb-plugin' "
-                "(install with: uv sync --group vllm)."
+                "(on the 4090 machine: .venv/bin/pip install "
+                "'vllm>=0.11' vllm-bnb-plugin)."
             ) from e
         from vllm import LLM
         self.model_id = model_id

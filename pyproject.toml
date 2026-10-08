@@ -36,12 +36,11 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
 ]
-# Inference engine for the 4090 machine only (NOT installed by default):
-# uv sync --group vllm
-vllm = [
-    "vllm>=0.11",
-    "vllm-bnb-plugin",
-]
+
+# NOTE: vLLM is intentionally NOT a dependency group: its torchvision pin
+# conflicts with torch==2.4.1/torchvision==0.19.1. On the 4090 machine install
+# it directly into the venv:
+#   .venv/bin/pip install "vllm>=0.11" vllm-bnb-plugin
 
 [tool.uv]                                                                                                                                                                                      
 package = false
