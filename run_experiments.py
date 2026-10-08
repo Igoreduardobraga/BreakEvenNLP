@@ -621,6 +621,12 @@ def main():
         help="Filtrar por modelos específicos (ex: bert roberta llama3 flan-t5 mistral zephyr llama2)."
     )
     parser.add_argument(
+        "--model-sizes",
+        nargs="+",
+        default=None,
+        help="Filtrar por tamanhos (ex: base 8b 4b 9b mini 26b)."
+    )
+    parser.add_argument(
         "--gpus",
         default=None,
         type=str,
@@ -673,6 +679,8 @@ def main():
         if args.datasets and exp["dataset"] not in args.datasets:
             continue
         if args.models and exp["model"] not in args.models:
+            continue
+        if args.model_sizes and exp.get("model_size") not in args.model_sizes:
             continue
         if exp["experiment_type"] in ("prompting", "icl", "icl_similarity"):
             exp["cmd_args"] = list(exp["cmd_args"]) + [
