@@ -35,6 +35,22 @@ DATASET_CONFIGS = {
         "sizes": [10, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 15000],
         "rskf_splits": 10,
     },
+    "mrpc": {
+        "sizes": [10, 50, 100, 250, 500, 1000, 2500, 4000],
+        "rskf_splits": 5,
+    },
+    "cola": {
+        "sizes": [10, 50, 100, 250, 500, 1000, 2500, 5000, 8000],
+        "rskf_splits": 5,
+    },
+    "trec": {
+        "sizes": [10, 50, 100, 250, 500, 1000, 2500, 4000],
+        "rskf_splits": 10,
+    },
+    "db_pedia": {
+        "sizes": [10, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 15000, 20000],
+        "rskf_splits": 5,
+    },
 }
 
 
@@ -52,7 +68,7 @@ def get_finetuning_batch_size(n: int) -> int:
 def generate_finetuning_commands() -> List[Dict[str, Any]]:
     """Gera comandos exatamente como definidos em run_experiments/finetuning.sh"""
     commands = []
-    datasets = ["sst2", "boolq", "ag_news", "snips"]
+    datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
     models = ["bert", "roberta", "deberta"]
 
     for ds in datasets:
@@ -97,7 +113,7 @@ def generate_finetuning_commands() -> List[Dict[str, Any]]:
 def generate_icl_commands() -> List[Dict[str, Any]]:
     """Gera comandos exatamente como definidos em run_experiments/icl.sh"""
     commands = []
-    datasets = ["boolq", "ag_news", "snips", "sst2"]
+    datasets = ["boolq", "ag_news", "snips", "sst2", "mrpc", "cola", "trec", "db_pedia"]
     models = ["llama2", "flan-t5", "zephyr", "mistral"]
 
     for ds in datasets:
@@ -140,7 +156,7 @@ def generate_icl_commands() -> List[Dict[str, Any]]:
 def generate_icl_llama3_commands() -> List[Dict[str, Any]]:
     """Gera comandos exatamente como definidos em run_experiments/icl-llama3.sh"""
     commands = []
-    datasets = ["sst2", "boolq", "ag_news", "snips"]
+    datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
     model = "llama3"
 
     for ds in datasets:
@@ -183,7 +199,7 @@ def generate_icl_llama3_commands() -> List[Dict[str, Any]]:
 def generate_it_flan_t5_commands() -> List[Dict[str, Any]]:
     """Gera comandos exatamente como definidos em run_experiments/it-flan-t5.sh"""
     commands = []
-    datasets = ["sst2", "boolq", "ag_news", "snips"]
+    datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
     model = "flan-t5"
 
     for ds in datasets:
@@ -226,7 +242,7 @@ def generate_it_flan_t5_commands() -> List[Dict[str, Any]]:
 def generate_it_mistral_zephyr_commands() -> List[Dict[str, Any]]:
     """Gera comandos exatamente como definidos em run_experiments/it-mistral-zephyr.sh"""
     commands = []
-    datasets = ["sst2", "boolq", "ag_news", "snips"]
+    datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
     models = ["mistral", "zephyr"]
 
     for ds in datasets:
@@ -270,7 +286,7 @@ def generate_it_mistral_zephyr_commands() -> List[Dict[str, Any]]:
 def generate_prompting_commands() -> List[Dict[str, Any]]:
     """Gera comandos exatamente como definidos em run_experiments/prompting.sh"""
     commands = []
-    datasets = ["ag_news", "snips", "boolq", "sst2"]
+    datasets = ["ag_news", "snips", "boolq", "sst2", "mrpc", "cola", "trec", "db_pedia"]
     models = ["llama2", "mistral", "zephyr", "flan-t5"]
 
     for ds in datasets:
@@ -312,7 +328,7 @@ def generate_prompting_commands() -> List[Dict[str, Any]]:
 def generate_prompting_llama3_commands() -> List[Dict[str, Any]]:
     """Gera comandos exatamente como definidos em run_experiments/prompting-llama3.sh"""
     commands = []
-    datasets = ["ag_news", "snips", "boolq", "sst2"]
+    datasets = ["ag_news", "snips", "boolq", "sst2", "mrpc", "cola", "trec", "db_pedia"]
     model = "llama3"
 
     for ds in datasets:
@@ -354,7 +370,7 @@ def generate_prompting_llama3_commands() -> List[Dict[str, Any]]:
 def generate_icl_modern_commands() -> List[Dict[str, Any]]:
     """Gera comandos de ICL para os novos modelos: Qwen 3.5 4B/9B, Phi-4-mini, Gemma 4 26B A4B"""
     commands = []
-    datasets = ["boolq", "ag_news", "snips", "sst2"]
+    datasets = ["boolq", "ag_news", "snips", "sst2", "mrpc", "cola", "trec", "db_pedia"]
     models = [
         ("qwen", "4b"),
         ("qwen", "9b"),
@@ -403,7 +419,7 @@ def generate_icl_modern_commands() -> List[Dict[str, Any]]:
 def generate_prompting_modern_commands() -> List[Dict[str, Any]]:
     """Gera comandos de prompting zero-shot para os novos modelos: Qwen 3.5 4B/9B, Phi-4-mini, Gemma 4 26B A4B"""
     commands = []
-    datasets = ["ag_news", "snips", "boolq", "sst2"]
+    datasets = ["ag_news", "snips", "boolq", "sst2", "mrpc", "cola", "trec", "db_pedia"]
     models = [
         ("qwen", "4b"),
         ("qwen", "9b"),
@@ -451,7 +467,7 @@ def generate_prompting_modern_commands() -> List[Dict[str, Any]]:
 def generate_it_modern_commands() -> List[Dict[str, Any]]:
     """Gera comandos de instruction tuning para os novos modelos"""
     commands = []
-    datasets = ["sst2", "boolq", "ag_news", "snips"]
+    datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
     models = [
         ("qwen", "4b"),
         ("qwen", "9b"),
@@ -595,7 +611,7 @@ def main():
         "--datasets",
         nargs="+",
         default=None,
-        choices=["sst2", "boolq", "ag_news", "snips"],
+        choices=["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"],
         help="Filtrar por datasets específicos."
     )
     parser.add_argument(
