@@ -419,276 +419,287 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
             golden.extend(targets.tolist())
     return golden, predictions
 
-parser = argparse.ArgumentParser()
-# Meta
-parser.add_argument('--experiment_name', default='investigation_experiments', type=str, help='Directory to save experiments to')
-parser.add_argument('--configuration_name', default='stability', type=str, help='Further distinction for the save directory')
-parser.add_argument('--experiment_type', default='icl', type=str, choices=['finetuning', 'prompting', 'icl', 'icl_similarity', 'instruction_tuning', 'instruction_tuning_steps'], help='Type of experiment to run')
-parser.add_argument('--full_test', default=1, type=int, help='Whether to use whole test dataset (Yes (default): 1; No: 0). If "No" and "num_labelled_test" is not set then uses same number of labelled samples as defined by num_labelled')
-parser.add_argument('--regenerate', default=0, type=int, help='Whether to calculate every result again or continue from checkpoint (Yes: 1; No (default): 0).')
-# General training args
-parser.add_argument('--factor', default='golden_model', type=str, choices=['golden_model', 'data_split', 'label_choice', 'sample_choice', 'sample_order', 'model_initialisation', 'model_randomness'], help='Randomness factor to investigate.')
-parser.add_argument('--num_shots', default=4, type=int, help='Number of samples to use as in-context examples in in-context learning or in different tasks in meta-learning.')
-parser.add_argument('--dataset', default='sst2', type=str, choices=['sst2', 'mrpc', 'cola', 'rte', 'boolq', 'trec', 'ag_news', 'db_pedia', 'snips'], help='Dataset to use for investigation.')
-parser.add_argument('--num_classes', default=2, type=int, help='Number of classes in dataset.')
-parser.add_argument('--batch_size', default=64, type=int)
-parser.add_argument('--train_size', default=0.8, type=float)
-parser.add_argument('--num_labelled', default=1000, type=int)
-parser.add_argument('--num_labelled_test', default=1000, type=int)
-parser.add_argument('--model', default='flan-t5', type=str, choices=['bert', 'roberta', 'deberta', 'flan-t5', 'llama2', 'chatgpt', 'protonet', 'maml', 'fomaml', 'reptile', 'mistral', 'zephyr', 'lora_bert', 'lora_roberta', 'llama3', 'qwen', 'phi', 'gemma'])
-parser.add_argument('--model_size', default='base', type=str, choices=['base', '8b', '4b', '9b', 'mini', '26b'])
-parser.add_argument('--lr', default=1e-5, type=float)
-parser.add_argument('--num_epochs', default=5, type=int, help='Total number of epochs to train for')
-parser.add_argument('--max_len', default=20, type=int, help='Maximal length of input for fine-tuning experiments')
-parser.add_argument('--prompt_format', default=0, type=int, help='Which prompt format to use')
-parser.add_argument('--engine', default='hf', type=str, choices=['hf', 'vllm'], help='Inference engine for prompting/icl (vllm: offline vLLM, causal models only)')
-parser.add_argument('--decoding', default='free', type=str, choices=['free', 'guided'], help='Decoding constraint (guided requires --engine vllm)')
-# K Fold
-parser.add_argument('--rskf_splits', default=10, type=int, help='Number of folds for RepeatedStratifiedKFold (K).')
-parser.add_argument('--rskf_repeats', default=1, type=int, help='Number of repeats for RepeatedStratifiedKFold (R).')
-parser.add_argument('--rskf_seed', default=27, type=int, help='Random state for RepeatedStratifiedKFold.')
-
-parser.add_argument('-f')
-args = parser.parse_args()
-
-device = torch.device('cuda')
-FT_MODELS = {
-    'bert':  BERTBase,
-    'roberta':  RoBERTaBase,
-    'deberta': DeBERTaBase,
-}
-
-ICL_MODELS = {
-    'flan-t5_base': 'google/flan-t5-base',
-    'llama2_base': 'meta-llama/Llama-2-13b-chat-hf',
-    'mistral_base': 'mistralai/Mistral-7B-Instruct-v0.1',
-    'zephyr_base': 'HuggingFaceH4/zephyr-7b-alpha',
-    'llama3_8b': 'meta-llama/Meta-Llama-3-8B-Instruct',
-    'qwen_4b': 'Qwen/Qwen3.5-4B',
-    'qwen_9b': 'Qwen/Qwen3.5-9B',
-    'phi_mini': 'microsoft/Phi-4-mini-instruct',
-    'gemma_26b': 'google/gemma-4-26B-A4B',
-}
-
-EXPERIMENT_TYPE = args.experiment_type
-FULL_TEST = args.full_test == 1
-MAX_LEN = args.max_len
-PROMPT_FORMAT = args.prompt_format
-
-RNGController.seed_all(0)
-os.environ['PYTHONHASHSEED'] = '0'
-
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = not torch.backends.cudnn.deterministic
-
-MODEL = args.model
-MODEL_SIZE = args.model_size
-FACTOR = args.factor
-DATASET = args.dataset
-ENGINE = args.engine
-DECODING = args.decoding
-if DECODING == 'guided' and ENGINE != 'vllm':
-    parser.error("--decoding guided requires --engine vllm")
-if ENGINE == 'vllm' and EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
-    parser.error("--engine vllm does not support instruction_tuning (in-memory tuned model)")
-RESULTS_PATH = os.path.join('results', f'{args.experiment_name}', f'{EXPERIMENT_TYPE}_{MODEL}_{MODEL_SIZE}', args.configuration_name, DATASET, FACTOR)
-if not os.path.exists(RESULTS_PATH):
-    os.makedirs(RESULTS_PATH)
-
-BATCH_SIZE = args.batch_size
-NUM_EPOCHS = args.num_epochs
-LEARNING_RATE = args.lr
 
 
-if MODEL == 'chatgpt':
-    model_name = MODEL
+def main():
+    global args, device, MODEL, MODEL_SIZE, FACTOR, DATASET, \
+        EXPERIMENT_TYPE, FULL_TEST, MAX_LEN, PROMPT_FORMAT, BATCH_SIZE, \
+        NUM_EPOCHS, LEARNING_RATE, ENGINE, DECODING, RESULTS_PATH, \
+        model, tokenizer, model_name
+    parser = argparse.ArgumentParser()
+    # Meta
+    parser.add_argument('--experiment_name', default='investigation_experiments', type=str, help='Directory to save experiments to')
+    parser.add_argument('--configuration_name', default='stability', type=str, help='Further distinction for the save directory')
+    parser.add_argument('--experiment_type', default='icl', type=str, choices=['finetuning', 'prompting', 'icl', 'icl_similarity', 'instruction_tuning', 'instruction_tuning_steps'], help='Type of experiment to run')
+    parser.add_argument('--full_test', default=1, type=int, help='Whether to use whole test dataset (Yes (default): 1; No: 0). If "No" and "num_labelled_test" is not set then uses same number of labelled samples as defined by num_labelled')
+    parser.add_argument('--regenerate', default=0, type=int, help='Whether to calculate every result again or continue from checkpoint (Yes: 1; No (default): 0).')
+    # General training args
+    parser.add_argument('--factor', default='golden_model', type=str, choices=['golden_model', 'data_split', 'label_choice', 'sample_choice', 'sample_order', 'model_initialisation', 'model_randomness'], help='Randomness factor to investigate.')
+    parser.add_argument('--num_shots', default=4, type=int, help='Number of samples to use as in-context examples in in-context learning or in different tasks in meta-learning.')
+    parser.add_argument('--dataset', default='sst2', type=str, choices=['sst2', 'mrpc', 'cola', 'rte', 'boolq', 'trec', 'ag_news', 'db_pedia', 'snips'], help='Dataset to use for investigation.')
+    parser.add_argument('--num_classes', default=2, type=int, help='Number of classes in dataset.')
+    parser.add_argument('--batch_size', default=64, type=int)
+    parser.add_argument('--train_size', default=0.8, type=float)
+    parser.add_argument('--num_labelled', default=1000, type=int)
+    parser.add_argument('--num_labelled_test', default=1000, type=int)
+    parser.add_argument('--model', default='flan-t5', type=str, choices=['bert', 'roberta', 'deberta', 'flan-t5', 'llama2', 'chatgpt', 'protonet', 'maml', 'fomaml', 'reptile', 'mistral', 'zephyr', 'lora_bert', 'lora_roberta', 'llama3', 'qwen', 'phi', 'gemma'])
+    parser.add_argument('--model_size', default='base', type=str, choices=['base', '8b', '4b', '9b', 'mini', '26b'])
+    parser.add_argument('--lr', default=1e-5, type=float)
+    parser.add_argument('--num_epochs', default=5, type=int, help='Total number of epochs to train for')
+    parser.add_argument('--max_len', default=20, type=int, help='Maximal length of input for fine-tuning experiments')
+    parser.add_argument('--prompt_format', default=0, type=int, help='Which prompt format to use')
+    parser.add_argument('--engine', default='hf', type=str, choices=['hf', 'vllm'], help='Inference engine for prompting/icl (vllm: offline vLLM, causal models only)')
+    parser.add_argument('--decoding', default='free', type=str, choices=['free', 'guided'], help='Decoding constraint (guided requires --engine vllm)')
+    # K Fold
+    parser.add_argument('--rskf_splits', default=10, type=int, help='Number of folds for RepeatedStratifiedKFold (K).')
+    parser.add_argument('--rskf_repeats', default=1, type=int, help='Number of repeats for RepeatedStratifiedKFold (R).')
+    parser.add_argument('--rskf_seed', default=27, type=int, help='Random state for RepeatedStratifiedKFold.')
 
-elif EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
-    model_name = ICL_MODELS[f'{MODEL}_{MODEL_SIZE}']
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    tokenizer.padding_side = 'right'
+    parser.add_argument('-f')
+    args = parser.parse_args()
 
-elif EXPERIMENT_TYPE in ('icl', 'prompting', 'icl_similarity'):
-    model_name = ICL_MODELS[f'{MODEL}_{MODEL_SIZE}']
+    device = torch.device('cuda')
+    FT_MODELS = {
+        'bert':  BERTBase,
+        'roberta':  RoBERTaBase,
+        'deberta': DeBERTaBase,
+    }
 
-    if ENGINE == 'vllm':
-        # Weights load inside _VLLMAdapter; keep only the HF id here so a
-        # second copy never sits in VRAM. Fail fast for unsupported families.
-        if ModelEvaluator._causal_family_for(MODEL) is None:
-            parser.error(f"--engine vllm supports causal families only, not '{MODEL}'")
-        model = None
-        tokenizer = None
+    ICL_MODELS = {
+        'flan-t5_base': 'google/flan-t5-base',
+        'llama2_base': 'meta-llama/Llama-2-13b-chat-hf',
+        'mistral_base': 'mistralai/Mistral-7B-Instruct-v0.1',
+        'zephyr_base': 'HuggingFaceH4/zephyr-7b-alpha',
+        'llama3_8b': 'meta-llama/Meta-Llama-3-8B-Instruct',
+        'qwen_4b': 'Qwen/Qwen3.5-4B',
+        'qwen_9b': 'Qwen/Qwen3.5-9B',
+        'phi_mini': 'microsoft/Phi-4-mini-instruct',
+        'gemma_26b': 'google/gemma-4-26B-A4B',
+    }
 
-    elif MODEL == 'llama2':
-        access_token = os.environ['HUGGINGFACE_TOKEN']
-        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True, token=access_token)
-        
-        tokenizer.padding_side = 'left'
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-            
-        model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", load_in_4bit=True, token=access_token)
-        model.config.pad_token_id = tokenizer.pad_token_id
-        generation_config = model.generation_config
-        generation_config.num_beams = 1
-        generation_config.max_new_tokens = 10
-        generation_config.do_sample = False
-        generation_config.temperature = None
-        model.eval()
-    elif MODEL in ['mistral', 'zephyr', 'llama3', 'qwen', 'phi', 'gemma']:
-        access_token = os.environ.get('HUGGINGFACE_TOKEN', None)
-        model = AutoModelForCausalLM.from_pretrained(model_name, load_in_4bit=True, device_map="auto", token=access_token)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, token=access_token)
-        tokenizer.padding_side = 'left'
-        
-        if tokenizer.pad_token is None:
-            if hasattr(tokenizer, 'eos_token') and tokenizer.eos_token is not None:
-                tokenizer.pad_token = tokenizer.eos_token
-            else:
-                tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-                model.resize_token_embeddings(len(tokenizer))
-        model.eval()
-    else:
+    EXPERIMENT_TYPE = args.experiment_type
+    FULL_TEST = args.full_test == 1
+    MAX_LEN = args.max_len
+    PROMPT_FORMAT = args.prompt_format
+
+    RNGController.seed_all(0)
+    os.environ['PYTHONHASHSEED'] = '0'
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = not torch.backends.cudnn.deterministic
+
+    MODEL = args.model
+    MODEL_SIZE = args.model_size
+    FACTOR = args.factor
+    DATASET = args.dataset
+    ENGINE = args.engine
+    DECODING = args.decoding
+    if DECODING == 'guided' and ENGINE != 'vllm':
+        parser.error("--decoding guided requires --engine vllm")
+    if ENGINE == 'vllm' and EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
+        parser.error("--engine vllm does not support instruction_tuning (in-memory tuned model)")
+    RESULTS_PATH = os.path.join('results', f'{args.experiment_name}', f'{EXPERIMENT_TYPE}_{MODEL}_{MODEL_SIZE}', args.configuration_name, DATASET, FACTOR)
+    if not os.path.exists(RESULTS_PATH):
+        os.makedirs(RESULTS_PATH)
+
+    BATCH_SIZE = args.batch_size
+    NUM_EPOCHS = args.num_epochs
+    LEARNING_RATE = args.lr
+
+
+    if MODEL == 'chatgpt':
+        model_name = MODEL
+
+    elif EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
+        model_name = ICL_MODELS[f'{MODEL}_{MODEL_SIZE}']
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         tokenizer.padding_side = 'right'
-        model = AutoModelForSeq2SeqLM.from_pretrained(model_name).cuda()
-        model.eval()
 
-else:
-    if MODEL == 'deberta':
-        model_name = 'microsoft/deberta-v3-base'
+    elif EXPERIMENT_TYPE in ('icl', 'prompting', 'icl_similarity'):
+        model_name = ICL_MODELS[f'{MODEL}_{MODEL_SIZE}']
+
+        if ENGINE == 'vllm':
+            # Weights load inside _VLLMAdapter; keep only the HF id here so a
+            # second copy never sits in VRAM. Fail fast for unsupported families.
+            if ModelEvaluator._causal_family_for(MODEL) is None:
+                parser.error(f"--engine vllm supports causal families only, not '{MODEL}'")
+            model = None
+            tokenizer = None
+
+        elif MODEL == 'llama2':
+            access_token = os.environ['HUGGINGFACE_TOKEN']
+            tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True, token=access_token)
+        
+            tokenizer.padding_side = 'left'
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            
+            model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", load_in_4bit=True, token=access_token)
+            model.config.pad_token_id = tokenizer.pad_token_id
+            generation_config = model.generation_config
+            generation_config.num_beams = 1
+            generation_config.max_new_tokens = 10
+            generation_config.do_sample = False
+            generation_config.temperature = None
+            model.eval()
+        elif MODEL in ['mistral', 'zephyr', 'llama3', 'qwen', 'phi', 'gemma']:
+            access_token = os.environ.get('HUGGINGFACE_TOKEN', None)
+            model = AutoModelForCausalLM.from_pretrained(model_name, load_in_4bit=True, device_map="auto", token=access_token)
+            tokenizer = AutoTokenizer.from_pretrained(model_name, token=access_token)
+            tokenizer.padding_side = 'left'
+        
+            if tokenizer.pad_token is None:
+                if hasattr(tokenizer, 'eos_token') and tokenizer.eos_token is not None:
+                    tokenizer.pad_token = tokenizer.eos_token
+                else:
+                    tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+                    model.resize_token_embeddings(len(tokenizer))
+            model.eval()
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            tokenizer.padding_side = 'right'
+            model = AutoModelForSeq2SeqLM.from_pretrained(model_name).cuda()
+            model.eval()
+
     else:
-        model_name = f'{MODEL}-{MODEL_SIZE}{"-uncased" if MODEL == "bert" else ""}'
+        if MODEL == 'deberta':
+            model_name = 'microsoft/deberta-v3-base'
+        else:
+            model_name = f'{MODEL}-{MODEL_SIZE}{"-uncased" if MODEL == "bert" else ""}'
 
-result_store = ResultStore(
-    results_path=RESULTS_PATH,
-    experiment_name=args.experiment_name,
-    experiment_type=EXPERIMENT_TYPE,
-    model_name=model_name,
-    dataset=DATASET,
-    factor=FACTOR,
-    configuration_name=args.configuration_name,
-    legacy_json=True,
-)
+    result_store = ResultStore(
+        results_path=RESULTS_PATH,
+        experiment_name=args.experiment_name,
+        experiment_type=EXPERIMENT_TYPE,
+        model_name=model_name,
+        dataset=DATASET,
+        factor=FACTOR,
+        configuration_name=args.configuration_name,
+        legacy_json=True,
+    )
     
-total_runs = args.rskf_repeats * args.rskf_splits
-run_seeds_path = os.path.join(RESULTS_PATH, 'run_seeds.pkl')
-run_seeds = RNGController.generate_run_seeds(
-    rskf_seed=args.rskf_seed,
-    total_runs=total_runs,
-    cache_path=run_seeds_path,
-    regenerate=bool(args.regenerate)
-)
-print(f'Using seeds: {run_seeds}')
+    total_runs = args.rskf_repeats * args.rskf_splits
+    run_seeds_path = os.path.join(RESULTS_PATH, 'run_seeds.pkl')
+    run_seeds = RNGController.generate_run_seeds(
+        rskf_seed=args.rskf_seed,
+        total_runs=total_runs,
+        cache_path=run_seeds_path,
+        regenerate=bool(args.regenerate)
+    )
+    print(f'Using seeds: {run_seeds}')
 
-_, all_targets, _ = load_text_and_targets(DATASET, PROMPT_FORMAT)
-all_targets = np.array(all_targets)
-n_samples = len(all_targets)
+    _, all_targets, _ = load_text_and_targets(DATASET, PROMPT_FORMAT)
+    all_targets = np.array(all_targets)
+    n_samples = len(all_targets)
 
-rskf = RepeatedStratifiedKFold(
-    n_splits=args.rskf_splits,
-    n_repeats=args.rskf_repeats,
-    random_state=args.rskf_seed
-)
-
-print(f'Running RSKF with {args.rskf_repeats} repeats × {args.rskf_splits} folds (total {args.rskf_repeats * args.rskf_splits}).')
-
-fold_counter = 0
-for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples), all_targets)):
-
-    r = split_idx // args.rskf_splits
-    k = split_idx %  args.rskf_splits
-
-    fold_path = os.path.join(RESULTS_PATH, f'repeat_{r}_fold_{k}')
-    if not os.path.exists(fold_path):
-        os.makedirs(fold_path)
-
-
-    if result_store.has_fold(r, k) and args.regenerate == 0:
-        print(f'RSKF repeat {r}, fold {k} already exists. Skipping!')
-        continue
-
-
-    current_run_seed = run_seeds[split_idx]
-    print(f'Running RSKF repeat {r}, fold {k} | train={len(train_idx)} test={len(test_idx)} | Seed: {current_run_seed}')
-
-    randomness_factor_seeds = RNGController.build_factor_seeds(
-        base_seed=current_run_seed,
-        isolated_factor=FACTOR
+    rskf = RepeatedStratifiedKFold(
+        n_splits=args.rskf_splits,
+        n_repeats=args.rskf_repeats,
+        random_state=args.rskf_seed
     )
 
-    fold_tracker = SustainabilityTracker()
-    fold_tracker.start()
+    print(f'Running RSKF with {args.rskf_repeats} repeats × {args.rskf_splits} folds (total {args.rskf_repeats * args.rskf_splits}).')
 
-    if EXPERIMENT_TYPE in ['finetuning']:
-        print('Running fine-tuning experiments!')
-        golden, predicted = ft_experiment(randomness_factor_seeds, train_test_indices=(train_idx, test_idx))
-        decodeds = None
-        prompts = None
-        inputs = None
-        f1_macro = compute_macro_f1(golden, predicted, failed_label=-1)
-        metrics = {'f1_macro': float(f1_macro)}
-    elif EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
-        eval_res = instruction_tuning_experiment(
-            randomness_factor_seeds, model_name, tokenizer, fold_path, train_test_indices=(train_idx, test_idx)
+    fold_counter = 0
+    for split_idx, (train_idx, test_idx) in enumerate(rskf.split(np.zeros(n_samples), all_targets)):
+
+        r = split_idx // args.rskf_splits
+        k = split_idx %  args.rskf_splits
+
+        fold_path = os.path.join(RESULTS_PATH, f'repeat_{r}_fold_{k}')
+        if not os.path.exists(fold_path):
+            os.makedirs(fold_path)
+
+
+        if result_store.has_fold(r, k) and args.regenerate == 0:
+            print(f'RSKF repeat {r}, fold {k} already exists. Skipping!')
+            continue
+
+
+        current_run_seed = run_seeds[split_idx]
+        print(f'Running RSKF repeat {r}, fold {k} | train={len(train_idx)} test={len(test_idx)} | Seed: {current_run_seed}')
+
+        randomness_factor_seeds = RNGController.build_factor_seeds(
+            base_seed=current_run_seed,
+            isolated_factor=FACTOR
         )
-        golden, predicted, decodeds = eval_res[0], eval_res[1], eval_res[2]
-        prompts = getattr(eval_res, 'prompts', None)
-        inputs = getattr(eval_res, 'inputs', None)
-        f1_prompting = compute_macro_f1(golden['prompting'], predicted['prompting'], failed_label=-1)
-        f1_icl       = compute_macro_f1(golden['icl'],       predicted['icl'],       failed_label=-1)
-        metrics = {'f1_prompting': float(f1_prompting), 'f1_macro_icl': float(f1_icl)}
-    else:
-        eval_model = None if MODEL == 'chatgpt' else model
-        eval_tok = None if MODEL == 'chatgpt' else tokenizer
-        eval_res = prompt_icl_experiment(
-            randomness_factor_seeds, eval_model, eval_tok, EXPERIMENT_TYPE, investigation_path=fold_path,
-            train_test_indices=(train_idx, test_idx)
+
+        fold_tracker = SustainabilityTracker()
+        fold_tracker.start()
+
+        if EXPERIMENT_TYPE in ['finetuning']:
+            print('Running fine-tuning experiments!')
+            golden, predicted = ft_experiment(randomness_factor_seeds, train_test_indices=(train_idx, test_idx))
+            decodeds = None
+            prompts = None
+            inputs = None
+            f1_macro = compute_macro_f1(golden, predicted, failed_label=-1)
+            metrics = {'f1_macro': float(f1_macro)}
+        elif EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
+            eval_res = instruction_tuning_experiment(
+                randomness_factor_seeds, model_name, tokenizer, fold_path, train_test_indices=(train_idx, test_idx)
+            )
+            golden, predicted, decodeds = eval_res[0], eval_res[1], eval_res[2]
+            prompts = getattr(eval_res, 'prompts', None)
+            inputs = getattr(eval_res, 'inputs', None)
+            f1_prompting = compute_macro_f1(golden['prompting'], predicted['prompting'], failed_label=-1)
+            f1_icl       = compute_macro_f1(golden['icl'],       predicted['icl'],       failed_label=-1)
+            metrics = {'f1_prompting': float(f1_prompting), 'f1_macro_icl': float(f1_icl)}
+        else:
+            eval_model = None if MODEL == 'chatgpt' else model
+            eval_tok = None if MODEL == 'chatgpt' else tokenizer
+            eval_res = prompt_icl_experiment(
+                randomness_factor_seeds, eval_model, eval_tok, EXPERIMENT_TYPE, investigation_path=fold_path,
+                train_test_indices=(train_idx, test_idx)
+            )
+            golden, predicted, decodeds = eval_res[0], eval_res[1], eval_res[2]
+            prompts = getattr(eval_res, 'prompts', None)
+            inputs = getattr(eval_res, 'inputs', None)
+            f1_macro = compute_macro_f1(golden, predicted, failed_label=-1)
+            metrics = {'f1_macro': float(f1_macro)}
+
+        sust_report = fold_tracker.stop()
+        duration = sust_report.duration_seconds
+        if 'f1_macro' in metrics:
+            print(metrics['f1_macro'])
+
+        result_store.record_fold(
+            repeat=r,
+            fold=k,
+            run_seed_used=current_run_seed,
+            randomness_factor_seeds=randomness_factor_seeds,
+            metrics=metrics,
+            real=golden,
+            predicted=predicted,
+            decodeds=decodeds,
+            duration_seconds=duration,
+            inputs=inputs,
+            prompts=prompts,
+            energy_kwh=sust_report.energy_kwh,
+            co2_kg=sust_report.co2_kg,
+            hardware=sust_report.hardware,
+            carbon_intensity=sust_report.carbon_intensity,
+            engine=ENGINE,
+            quant_format=(
+                'bitsandbytes' if ENGINE == 'vllm'
+                else ('fp32' if MODEL == 'flan-t5'
+                      else ('api' if MODEL == 'chatgpt' else 'bnb-4bit-nf4'))
+            ),
+            decoding=DECODING,
         )
-        golden, predicted, decodeds = eval_res[0], eval_res[1], eval_res[2]
-        prompts = getattr(eval_res, 'prompts', None)
-        inputs = getattr(eval_res, 'inputs', None)
-        f1_macro = compute_macro_f1(golden, predicted, failed_label=-1)
-        metrics = {'f1_macro': float(f1_macro)}
-
-    sust_report = fold_tracker.stop()
-    duration = sust_report.duration_seconds
-    if 'f1_macro' in metrics:
-        print(metrics['f1_macro'])
-
-    result_store.record_fold(
-        repeat=r,
-        fold=k,
-        run_seed_used=current_run_seed,
-        randomness_factor_seeds=randomness_factor_seeds,
-        metrics=metrics,
-        real=golden,
-        predicted=predicted,
-        decodeds=decodeds,
-        duration_seconds=duration,
-        inputs=inputs,
-        prompts=prompts,
-        energy_kwh=sust_report.energy_kwh,
-        co2_kg=sust_report.co2_kg,
-        hardware=sust_report.hardware,
-        carbon_intensity=sust_report.carbon_intensity,
-        engine=ENGINE,
-        quant_format=(
-            'bitsandbytes' if ENGINE == 'vllm'
-            else ('fp32' if MODEL == 'flan-t5'
-                  else ('api' if MODEL == 'chatgpt' else 'bnb-4bit-nf4'))
-        ),
-        decoding=DECODING,
-    )
       
-    # Clean checkpoints  
-    if EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
-        try:
-            for item_name in os.listdir(fold_path):
-                item_path = os.path.join(fold_path, item_name)
-                if os.path.isdir(item_path) and item_name.startswith('checkpoint-'):
-                    shutil.rmtree(item_path)
-        except Exception as e:
-            print(f"Error while trying to remove checkpoint: {e}")
+        # Clean checkpoints  
+        if EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
+            try:
+                for item_name in os.listdir(fold_path):
+                    item_path = os.path.join(fold_path, item_name)
+                    if os.path.isdir(item_path) and item_name.startswith('checkpoint-'):
+                        shutil.rmtree(item_path)
+            except Exception as e:
+                print(f"Error while trying to remove checkpoint: {e}")
 
-    fold_counter += 1
+        fold_counter += 1
+
+
+if __name__ == '__main__':
+    main()
