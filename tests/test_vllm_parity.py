@@ -38,14 +38,23 @@ class TestVLLMParity(unittest.TestCase):
         )
         pool.context_samples = pool.get_shots(num_shots=2, choice_seed=0, order_seed=0)
 
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+        import torch
         model_id = "mistralai/Mistral-7B-Instruct-v0.1"
         tok = AutoTokenizer.from_pretrained(model_id)
         if tok.pad_token is None:
             tok.pad_token = tok.eos_token
         tok.padding_side = "left"
+        # transformers>=5 removed the load_in_4bit kwarg: use quantization_config
+        # (same NF4/double-quant/bf16 setup as main.py).
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+        )
         hf_model = AutoModelForCausalLM.from_pretrained(
-            model_id, load_in_4bit=True, device_map="auto")
+            model_id, quantization_config=bnb_config, device_map="auto")
         hf_model.eval()
 
         hf = ModelEvaluator(model=hf_model, tokenizer=tok, model_name="mistral",
