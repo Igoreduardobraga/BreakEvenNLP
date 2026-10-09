@@ -18,7 +18,6 @@ import numpy as np
 import os
 import copy
 import json
-from peft import LoraConfig, PeftModelForCausalLM, prepare_model_for_kbit_training
 from sklearn.metrics import f1_score, accuracy_score
 from sklearn.model_selection import RepeatedStratifiedKFold, train_test_split
 from torch.utils.data import DataLoader
@@ -27,7 +26,21 @@ import shutil
 import torch.nn.functional as F
 
 
-from trl import SFTTrainer, DataCollatorForCompletionOnlyLM, SFTConfig
+def _require_it_deps():
+    """Lazy trl/peft imports: prompting/icl/finetuning must not require them."""
+    try:
+        from trl import SFTTrainer, SFTConfig
+    except ImportError as e:
+        raise ImportError(f"instruction_tuning requires trl: {e}") from e
+    try:
+        from trl import DataCollatorForCompletionOnlyLM
+    except ImportError:
+        try:
+            from trl.trainer import DataCollatorForCompletionOnlyLM
+        except ImportError as e:
+            raise ImportError(f"installed trl has no DataCollatorForCompletionOnlyLM: {e}") from e
+    from peft import LoraConfig, prepare_model_for_kbit_training
+    return SFTTrainer, DataCollatorForCompletionOnlyLM, SFTConfig, LoraConfig, prepare_model_for_kbit_training
 
 def compute_macro_f1(golden, predicted, failed_label=-1):
     total_samples = len(predicted)
@@ -125,6 +138,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
             "Run instruction_tuning with --engine hf, or save the merged model "
             "and evaluate it via --experiment_type icl/prompting --engine vllm."
         )
+    SFTTrainer, DataCollatorForCompletionOnlyLM, SFTConfig, LoraConfig, prepare_model_for_kbit_training = _require_it_deps()
     dataset = InstructionTuningDataset(
         dataset_name=DATASET,
         train_size=args.train_size,
