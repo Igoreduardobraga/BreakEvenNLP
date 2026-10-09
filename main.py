@@ -420,6 +420,24 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
     return golden, predictions
 
 
+FT_MODELS = {
+    'bert':  BERTBase,
+    'roberta':  RoBERTaBase,
+    'deberta': DeBERTaBase,
+}
+
+ICL_MODELS = {
+    'flan-t5_base': 'google/flan-t5-base',
+    'llama2_base': 'meta-llama/Llama-2-13b-chat-hf',
+    'mistral_base': 'mistralai/Mistral-7B-Instruct-v0.1',
+    'zephyr_base': 'HuggingFaceH4/zephyr-7b-alpha',
+    'llama3_8b': 'meta-llama/Meta-Llama-3-8B-Instruct',
+    'qwen_4b': 'Qwen/Qwen3.5-4B',
+    'qwen_9b': 'Qwen/Qwen3.5-9B',
+    'phi_mini': 'microsoft/Phi-4-mini-instruct',
+    'gemma_26b': 'google/gemma-4-26B-A4B',
+}
+
 
 def main():
     global args, device, MODEL, MODEL_SIZE, FACTOR, DATASET, \
@@ -459,23 +477,6 @@ def main():
     args = parser.parse_args()
 
     device = torch.device('cuda')
-    FT_MODELS = {
-        'bert':  BERTBase,
-        'roberta':  RoBERTaBase,
-        'deberta': DeBERTaBase,
-    }
-
-    ICL_MODELS = {
-        'flan-t5_base': 'google/flan-t5-base',
-        'llama2_base': 'meta-llama/Llama-2-13b-chat-hf',
-        'mistral_base': 'mistralai/Mistral-7B-Instruct-v0.1',
-        'zephyr_base': 'HuggingFaceH4/zephyr-7b-alpha',
-        'llama3_8b': 'meta-llama/Meta-Llama-3-8B-Instruct',
-        'qwen_4b': 'Qwen/Qwen3.5-4B',
-        'qwen_9b': 'Qwen/Qwen3.5-9B',
-        'phi_mini': 'microsoft/Phi-4-mini-instruct',
-        'gemma_26b': 'google/gemma-4-26B-A4B',
-    }
 
     EXPERIMENT_TYPE = args.experiment_type
     FULL_TEST = args.full_test == 1
