@@ -59,11 +59,31 @@ class TestVLLMParity(unittest.TestCase):
 
         hf = ModelEvaluator(model=hf_model, tokenizer=tok, model_name="mistral",
                             batch_size=1, engine="hf")
-        vl = ModelEvaluator(model=model_id, tokenizer=None, model_name="mistral",
-                            engine="vllm", seed=42)
+        vl = None  # built after the HF model is freed (see below)
 
+        hf_results = {}
         for mode in ("prompting", "icl"):
             g1, p1, d1 = hf.evaluate(pool, mode=mode)
+            hf_results[mode] = (list(g1), list(p1), list(d1))
+
+        # Free the HF weights before vLLM init: co-residency OOMs (5GB HF +
+        # 0.85*24GB reservation > 24GB). 0.70 is plenty for 2048 ctx + short prompts.
+        import gc
+        del hf, hf_model, tok
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+        vl = ModelEvaluator(model=model_id, tokenizer=None, model_name="mistral",
+                            engine="vllm", seed=42,
+                            vllm_kwargs={"budget_override": {"gpu_memory_utilization": 0.70}})
+
+        for mode in ("prompting", "icl"):
+            g1, p1, d1 = hf_results[mode]
             g2, p2, d2 = vl.evaluate(pool, mode=mode)
             self.assertEqual(g1, g2)
             self.assertEqual(p1, p2, f"label divergence in mode={mode}")
