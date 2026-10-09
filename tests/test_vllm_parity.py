@@ -3,7 +3,7 @@
 Run on the RTX 4090 machine with:
     VLLM_PARITY=1 .venv/bin/python -m pytest tests/test_vllm_parity.py -q
 
-Protocol: ~100 fixed sst2 prompts (zero-shot + ICL), greedy on both engines,
+Protocol: 40 fixed sst2 test prompts (zero-shot + ICL), greedy on both engines,
 criterion = parsed labels 100% identical; raw decoded strings reported with
 whitespace tolerance. Any label divergence fails.
 """
