@@ -213,8 +213,13 @@ class DatasetLoader():
         self.dataset = dataset
 
         if hasattr(dataset, 'pool') and hasattr(dataset.pool, 'to_torch_dataset') and not hasattr(dataset, 'train_data'):
-            self.train_dataset = dataset.pool.to_torch_dataset(split='train')
-            self.test_dataset = dataset.pool.to_torch_dataset(split='test')
+            # Forward the dataset's own tokenizer so test/train inputs are
+            # really encoded (without it the adapter yields all-zero ids and
+            # evaluation collapses to a single class).
+            tok = getattr(dataset, 'tokenizer', None)
+            max_len = getattr(dataset, 'max_len', 50)
+            self.train_dataset = dataset.pool.to_torch_dataset(split='train', tokenizer=tok, max_len=max_len)
+            self.test_dataset = dataset.pool.to_torch_dataset(split='test', tokenizer=tok, max_len=max_len)
         elif hasattr(dataset, 'train'):
             # Shallow copy to isolate train/test mode for legacy datasets like FineTuningDataset
             self.train_dataset = copy.copy(dataset)

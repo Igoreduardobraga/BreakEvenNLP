@@ -337,6 +337,34 @@ class TestDatasetWrappersRetrofit(unittest.TestCase):
             batches = list(it_ds.batch_data_for_evaluation(batch=2))
             self.assertEqual(len(batches), 1)
 
+    def test_dataset_loader_testloader_really_encodes(self):
+        """Regression: DatasetLoader must forward the tokenizer to the pool,
+        otherwise test batches are all-zero ids and eval collapses."""
+        from data import FineTuningDataset, DatasetLoader
+
+        class DummyTokenizer:
+            def encode_plus(self, text, **kwargs):
+                n = [len(text)] * 5
+                return {"input_ids": n, "attention_mask": [1] * 5,
+                        "token_type_ids": [0] * 5}
+
+        train_test = ([0, 1], [2, 3])
+        canned_t = ("Text 0", "Text 1", "Text 2", "Text 3")
+        canned_y = (0, 1, 0, 1)
+        canned_c = ("neg", "pos")
+
+        from unittest.mock import patch
+        with patch('data.load_text_and_targets', return_value=(canned_t, canned_y, canned_c)):
+            ds = FineTuningDataset("sst2", train_test_indices=train_test,
+                                   tokenizer=DummyTokenizer(), max_len=5)
+            loader = DatasetLoader("sst2", batch_size=2, dataset=ds)
+            batch = next(iter(loader.testloader()))
+            ids = batch["ids"].tolist() if hasattr(batch["ids"], "tolist") else batch["ids"]
+            flat = [t for seq in ids for t in seq]
+            self.assertTrue(any(t != 0 for t in flat),
+                            "testloader ids are all zeros: tokenizer was not forwarded")
+            self.assertEqual(len(batch["targets"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
