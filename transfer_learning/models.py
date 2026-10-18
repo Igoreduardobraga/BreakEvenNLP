@@ -140,8 +140,16 @@ class DeBERTaBase(nn.Module, DeterministicModel):
             if not trainable:
                 for param in self.deberta.parameters():
                     param.requires_grad = False
+            # DeBERTa has no pretrained pooler; like DebertaV2ForSequenceClassification
+            # (ContextPooler), add dense + GELU on [CLS] so the head matches the
+            # dense + tanh pooler BERT/RoBERTa feed into their classifier.
+            config = self.deberta.config
+            pooler_size = getattr(config, 'pooler_hidden_size', config.hidden_size)
+            self.pooler = torch.nn.Linear(config.hidden_size, pooler_size)
+            torch.nn.init.normal_(self.pooler.weight, mean=0.0, std=config.initializer_range)
+            torch.nn.init.zeros_(self.pooler.bias)
             self.dropout = torch.nn.Dropout(p=0.3)
-            self.output = torch.nn.Linear(self.deberta.config.hidden_size, n_classes)
+            self.output = torch.nn.Linear(pooler_size, n_classes)
 
         self.dropout_states = self.dropout_stream._state
 
@@ -152,8 +160,9 @@ class DeBERTaBase(nn.Module, DeterministicModel):
         outputs = self.deberta(**kwargs)
         # Extract [CLS] token representation at position 0
         cls_output = outputs[0][:, 0, :]
+        pooled = torch.nn.functional.gelu(self.pooler(cls_output))
         with self.dropout_stream:
-            output = self.dropout(cls_output)
+            output = self.dropout(pooled)
         output = self.output(output)
         self.dropout_states = self.dropout_stream._state
         return output
