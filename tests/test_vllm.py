@@ -45,11 +45,21 @@ class FakeSamplingParams:
         self.extra = kwargs
 
 
+class FakeStructuredOutputsParams:
+    def __init__(self, choice=None, **kwargs):
+        self.choice = choice
+
+
 def install_stub():
     mod = types.ModuleType("vllm")
     mod.LLM = FakeLLM
     mod.SamplingParams = FakeSamplingParams
+    sp_mod = types.ModuleType("vllm.sampling_params")
+    sp_mod.SamplingParams = FakeSamplingParams
+    sp_mod.StructuredOutputsParams = FakeStructuredOutputsParams
+    mod.sampling_params = sp_mod
     sys.modules["vllm"] = mod
+    sys.modules["vllm.sampling_params"] = sp_mod
 
 
 class DummyDataset:
@@ -94,13 +104,16 @@ class TestVLLMAdapter(unittest.TestCase):
         self.assertEqual(params.max_tokens, 10)
         self.assertNotIn("guided_choice", params.extra)
 
-    def test_guided_decoding_passes_choices(self):
+    def test_guided_decoding_passes_choice_via_structured_outputs(self):
         from evaluator import ModelEvaluator
         ev = ModelEvaluator(model="x", tokenizer=None, model_name="qwen_4b", engine="vllm")
         golden, predicted, decodeds = ev.evaluate(DummyDataset(), mode="icl", decoding="guided")
         self.assertEqual(predicted, [1, 0])
         _, params = FakeLLM.last_instance.calls[-1]
-        self.assertEqual(params.extra["guided_choice"], ["negative", "positive"])
+        # vLLM >= 0.10: guided decoding is expressed via structured_outputs.choice
+        self.assertIn("structured_outputs", params.extra)
+        self.assertEqual(params.extra["structured_outputs"].choice, ["negative", "positive"])
+        self.assertNotIn("guided_choice", params.extra)
 
     def test_guided_on_hf_raises(self):
         from evaluator import ModelEvaluator

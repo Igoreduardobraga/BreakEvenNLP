@@ -380,8 +380,31 @@ class _VLLMAdapter:
         except Exception:
             pass
 
-    def evaluate(self, dataset, mode='prompting', decoding='free'):
+    def _build_sampling_params(self, dataset, decoding: str):
+        """Builds SamplingParams honouring guided decoding across vLLM versions.
+
+        vLLM >= 0.10 removed the `guided_choice` SamplingParams kwarg in favour
+        of `structured_outputs=StructuredOutputsParams(choice=[...])`.
+        """
         from vllm import SamplingParams
+        import inspect
+        common = dict(
+            temperature=0.0,
+            max_tokens=self.max_new_tokens,
+            seed=self.seed,
+        )
+        if decoding != 'guided':
+            return SamplingParams(**common)
+
+        if 'guided_choice' in inspect.signature(SamplingParams).parameters:
+            return SamplingParams(guided_choice=list(dataset.classes), **common)
+        from vllm.sampling_params import StructuredOutputsParams
+        return SamplingParams(
+            structured_outputs=StructuredOutputsParams(choice=list(dataset.classes)),
+            **common,
+        )
+
+    def evaluate(self, dataset, mode='prompting', decoding='free'):
         if decoding not in ('free', 'guided'):
             raise ValueError(f"Unknown decoding '{decoding}'. Use 'free' or 'guided'.")
         shots = getattr(dataset, 'context_samples', None) if mode == 'icl' else None
@@ -393,12 +416,7 @@ class _VLLMAdapter:
             test_texts.extend(data)
             test_labels.extend(labels)
 
-        params = SamplingParams(
-            temperature=0.0,
-            max_tokens=self.max_new_tokens,
-            seed=self.seed,
-            **({'guided_choice': list(dataset.classes)} if decoding == 'guided' else {})
-        )
+        params = self._build_sampling_params(dataset, decoding)
         prompts = [
             self._to_string(self.prompter.format(
                 sample, dataset_name=dataset_name, classes=dataset.classes,
