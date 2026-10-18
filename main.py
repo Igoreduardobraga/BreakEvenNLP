@@ -1,6 +1,6 @@
 # main.py
 
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments, get_linear_schedule_with_warmup, EarlyStoppingCallback
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments, Trainer, DataCollatorForSeq2Seq, get_linear_schedule_with_warmup, EarlyStoppingCallback
 from datasets import Dataset
 from data import ICLDataset, FineTuningDataset, DatasetLoader, PromptDataset, SimilarityICLDataset, InstructionTuningDataset, TextDataset, load_text_and_targets, SeededRandomSampler
 from transfer_learning.models import BERTBase, RoBERTaBase, DeBERTaBase
@@ -27,20 +27,41 @@ import torch.nn.functional as F
 
 
 def _require_it_deps():
-    """Lazy trl/peft imports: prompting/icl/finetuning must not require them."""
+    """Lazy peft imports: prompting/icl/finetuning must not require them."""
     try:
-        from trl import SFTTrainer, SFTConfig
+        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
     except ImportError as e:
-        raise ImportError(f"instruction_tuning requires trl: {e}") from e
-    try:
-        from trl import DataCollatorForCompletionOnlyLM
-    except ImportError:
-        try:
-            from trl.trainer import DataCollatorForCompletionOnlyLM
-        except ImportError as e:
-            raise ImportError(f"installed trl has no DataCollatorForCompletionOnlyLM: {e}") from e
-    from peft import LoraConfig, prepare_model_for_kbit_training
-    return SFTTrainer, DataCollatorForCompletionOnlyLM, SFTConfig, LoraConfig, prepare_model_for_kbit_training
+        raise ImportError(f"instruction_tuning requires peft: {e}") from e
+    return LoraConfig, get_peft_model, prepare_model_for_kbit_training
+
+
+IT_MAX_LEN = 1024
+
+
+def tokenize_it_pairs(pairs, tokenizer, seq2seq, max_len=IT_MAX_LEN):
+    """Tokenizes (prompt, completion) pairs so the loss covers only the completion.
+
+    The prompt is tokenized exactly as the evaluator tokenizes it at inference.
+    Seq2seq: the encoder sees the prompt and the decoder learns the completion.
+    Causal: prompt tokens are masked with -100; overlong prompts lose their
+    head so the chat template's assistant header and the answer survive.
+    """
+    examples = []
+    for prompt, completion in pairs:
+        prompt_ids = tokenizer(prompt)['input_ids']
+        if seq2seq:
+            prompt_ids = prompt_ids[:max_len]
+            examples.append({'input_ids': prompt_ids,
+                             'attention_mask': [1] * len(prompt_ids),
+                             'labels': tokenizer(completion)['input_ids']})
+            continue
+        completion_ids = tokenizer(completion, add_special_tokens=False)['input_ids']
+        prompt_ids = prompt_ids[-(max_len - len(completion_ids)):]
+        input_ids = prompt_ids + completion_ids
+        examples.append({'input_ids': input_ids,
+                         'attention_mask': [1] * len(input_ids),
+                         'labels': [-100] * len(prompt_ids) + completion_ids})
+    return examples
 
 def compute_macro_f1(golden, predicted, failed_label=-1):
     total_samples = len(predicted)
@@ -138,7 +159,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
             "Run instruction_tuning with --engine hf, or save the merged model "
             "and evaluate it via --experiment_type icl/prompting --engine vllm."
         )
-    SFTTrainer, DataCollatorForCompletionOnlyLM, SFTConfig, LoraConfig, prepare_model_for_kbit_training = _require_it_deps()
+    LoraConfig, get_peft_model, prepare_model_for_kbit_training = _require_it_deps()
     dataset = InstructionTuningDataset(
         dataset_name=DATASET,
         train_size=args.train_size,
@@ -151,15 +172,6 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         prompt_format=PROMPT_FORMAT,
         train_test_indices=train_test_indices
     )
-
-    prompter = PromptFormatter(model_name=MODEL, prompt_format=PROMPT_FORMAT)
-    prompts = prompter.format_instruction_tuning(
-        dataset.context_samples,
-        dataset_name=DATASET,
-        classes=dataset.classes,
-        custom_instruction=getattr(dataset, 'instructions', None)
-    )
-    response_template = prompter.get_response_template()
 
     if MODEL == 'flan-t5':
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name).cuda()
@@ -187,36 +199,44 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         tokenizer = AutoTokenizer.from_pretrained(model_name, token=access_token)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.padding_side = 'right'
 
         model = prepare_model_for_kbit_training(model)
-            
-    all_idx = np.arange(len(prompts))
+        model = get_peft_model(model, peft_config)
+
+    # Same formatter (and tokenizer/chat template) the evaluator uses, so the
+    # tuned prompt is exactly the evaluated zero-shot prompt.
+    prompter = PromptFormatter(model_name=MODEL, prompt_format=PROMPT_FORMAT, tokenizer=tokenizer)
+    pairs = prompter.format_instruction_tuning(
+        dataset.context_samples,
+        dataset_name=DATASET,
+        classes=dataset.classes,
+        custom_instruction=getattr(dataset, 'instructions', None)
+    )
+
+    all_idx = np.arange(len(pairs))
     train_idx, val_idx = train_test_split(
         all_idx, test_size=0.1,
         random_state=randomness_factor_seeds['sample_order'],
         shuffle=True
     )
 
-    train_prompts = [prompts[i] for i in train_idx]
-    train_labels  = [dataset.train_targets[i] for i in train_idx]
-    val_prompts   = [prompts[i] for i in val_idx]
-    val_labels    = [dataset.train_targets[i] for i in val_idx]
+    train_pairs = [pairs[i] for i in train_idx]
+    val_pairs   = [pairs[i] for i in val_idx]
         
     if MODEL == 'flan-t5':
         steps_per_epoch_cap = 250
         max_examples_per_epoch = steps_per_epoch_cap * 4
-        if len(train_prompts) > max_examples_per_epoch:
+        if len(train_pairs) > max_examples_per_epoch:
             rng = np.random.default_rng(randomness_factor_seeds['sample_order'])
-            keep = rng.choice(len(train_prompts), size=max_examples_per_epoch, replace=False)
+            keep = rng.choice(len(train_pairs), size=max_examples_per_epoch, replace=False)
             keep.sort()
-            train_prompts = [train_prompts[i] for i in keep]
-            train_labels  = [train_labels[i]  for i in keep]
-            
-    train_ds = Dataset.from_dict({'prompt': train_prompts, 'label': train_labels})
-    val_ds   = Dataset.from_dict({'prompt': val_prompts,   'label': val_labels})
+            train_pairs = [train_pairs[i] for i in keep]
 
-    training_args = SFTConfig(
+    seq2seq = MODEL == 'flan-t5'
+    train_ds = Dataset.from_list(tokenize_it_pairs(train_pairs, tokenizer, seq2seq))
+    val_ds   = Dataset.from_list(tokenize_it_pairs(val_pairs, tokenizer, seq2seq))
+
+    training_args = TrainingArguments(
         output_dir=investigation_path,
         per_device_train_batch_size=BATCH_SIZE,
         learning_rate=LEARNING_RATE,
@@ -232,27 +252,29 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         optim="paged_adamw_8bit" if MODEL != 'flan-t5' else 'adamw_torch',
         lr_scheduler_type="linear",
         warmup_ratio=0.1,
-        dataset_text_field="prompt",
-        max_seq_length=512,
-        packing=False,
+        # PeftModel hides the labels argument from Trainer's signature check;
+        # without it eval_loss is never computed for early stopping.
+        label_names=['labels'],
     )
 
-    collator = DataCollatorForCompletionOnlyLM(response_template, tokenizer=tokenizer)
+    # Pads input_ids/attention_mask with the tokenizer and labels with -100;
+    # with the T5 model it also builds decoder_input_ids from the labels.
+    collator = DataCollatorForSeq2Seq(tokenizer, model=model if seq2seq else None,
+                                      label_pad_token_id=-100, padding='longest')
 
-    trainer = SFTTrainer(
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=val_ds,
         data_collator=collator,
-        tokenizer=tokenizer,
-        peft_config=peft_config if MODEL != 'flan-t5' else None,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=5, early_stopping_threshold=0.0)]
     )
 
     trainer.train()
-    if MODEL != 'flan-t5':
-       model = trainer.model.merge_and_unload()
+    # Keep the LoRA adapter unmerged: merging into 4-bit weights re-quantizes
+    # them and evaluates a different model than the one that was trained.
+    model = trainer.model
     model.eval()
     
     if MODEL != 'flan-t5':

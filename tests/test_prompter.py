@@ -6,6 +6,7 @@ and chat template formatting without external network or GPU dependencies.
 """
 
 import unittest
+from unittest.mock import MagicMock
 from prompter import PromptFormatter
 
 
@@ -183,97 +184,47 @@ class TestPromptFormatterBatch(unittest.TestCase):
 
 
 class TestPromptFormatterInstructionTuning(unittest.TestCase):
-    """Tests instruction tuning SFT formatting and response templates."""
+    """Instruction tuning trains on exactly the prompt that is evaluated."""
+
+    FAMILIES = {
+        "flan-t5": "",
+        "mistral": "</s>",
+        "zephyr": "</s>",
+        "llama3": "<|eot_id|>",
+        "llama2": "</s>",
+        "qwen": "<|im_end|>",
+        "phi": "<|end|>",
+        "gemma": "<end_of_turn>",
+    }
 
     def setUp(self):
         self.samples = [("Superb film", "positive"), ("Awful waste of time", "negative")]
 
-    def test_flan_t5_instruction_tuning(self):
+    def test_training_prompt_is_inference_prompt(self):
+        for model, end in self.FAMILIES.items():
+            with self.subTest(model=model):
+                prompter = PromptFormatter(model_name=model, prompt_format=0)
+                pairs = prompter.format_instruction_tuning(self.samples, dataset_name="sst2")
+                self.assertEqual(len(pairs), 2)
+                for (text, label), (prompt, completion) in zip(self.samples, pairs):
+                    self.assertEqual(prompt, prompter.format(text, dataset_name="sst2"))
+                    self.assertEqual(completion, f"{label}{end}")
+
+    def test_training_prompt_does_not_contain_label(self):
         prompter = PromptFormatter(model_name="flan-t5", prompt_format=0)
-        prompts = prompter.format_instruction_tuning(self.samples, dataset_name="sst2")
-        self.assertEqual(len(prompts), 2)
-        self.assertIn("Analyze the sentiment of the text.", prompts[0])
-        self.assertIn("Text: Superb film\nAnswer: positive", prompts[0])
-        self.assertIn("Text: Awful waste of time\nAnswer: negative", prompts[1])
+        prompt, completion = prompter.format_training_pair("Superb film", "positive", dataset_name="sst2")
+        self.assertEqual(completion, "positive")
+        self.assertTrue(prompt.endswith("Text: Superb film\nAnswer: "))
 
-    def test_mistral_instruction_tuning(self):
-        prompter = PromptFormatter(model_name="mistral", prompt_format=0)
-        prompts = prompter.format_instruction_tuning(self.samples, dataset_name="sst2")
-        self.assertEqual(len(prompts), 2)
-        self.assertTrue(prompts[0].startswith("<s>[INST]"))
-        self.assertTrue(prompts[0].endswith("[/INST] positive</s>"))
-        self.assertIn("Text: Superb film", prompts[0])
-
-    def test_zephyr_instruction_tuning(self):
-        prompter = PromptFormatter(model_name="zephyr", prompt_format=0)
-        prompts = prompter.format_instruction_tuning(self.samples, dataset_name="sst2")
-        self.assertEqual(len(prompts), 2)
-        self.assertIn("<|system|>\nAnalyze the sentiment", prompts[0])
-        self.assertIn("<|user|>\nText: Superb film</s>", prompts[0])
-        self.assertIn("<|assistant|>\npositive</s>", prompts[0])
-
-    def test_llama3_instruction_tuning(self):
-        prompter = PromptFormatter(model_name="llama3", prompt_format=0)
-        prompts = prompter.format_instruction_tuning(self.samples, dataset_name="sst2")
-        self.assertEqual(len(prompts), 2)
-        self.assertIn("<|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.", prompts[0])
-        self.assertIn("<|start_header_id|>user<|end_header_id|>\n\nAnalyze the sentiment", prompts[0])
-        self.assertIn("<|start_header_id|>assistant<|end_header_id|>\n\npositive<|eot_id|>", prompts[0])
-
-    def test_response_templates(self):
-        self.assertEqual(PromptFormatter("flan-t5").get_response_template(), "Answer:")
-        self.assertEqual(PromptFormatter("mistral").get_response_template(), "[/INST]")
-        self.assertEqual(PromptFormatter("zephyr").get_response_template(), "<|assistant|>")
-        self.assertEqual(PromptFormatter("llama3").get_response_template(), "<|start_header_id|>assistant<|end_header_id|>\n\n")
-
-
-class TestDataKeywordsDelegation(unittest.TestCase):
-    """Verifies data.py delegates prepare_dataset_keywords to PromptFormatter."""
-
-    def test_text_dataset_keywords_delegation(self):
-        import sys
-        from unittest.mock import MagicMock
-
-        class BaseDataset:
-            pass
-
-        # Mock third-party dependencies if not installed locally
-        mocked_modules = [
-            'torch', 'torch.utils', 'torch.utils.data', 'datasets',
-            'transformers', 'pandas', 'numpy', 'sklearn',
-            'sklearn.metrics', 'sklearn.metrics.pairwise', 'sklearn.model_selection'
-        ]
-        originals = {}
-        for mod in mocked_modules:
-            if mod not in sys.modules:
-                originals[mod] = None
-                mock = MagicMock()
-                if mod == 'torch.utils.data':
-                    mock.Dataset = BaseDataset
-                sys.modules[mod] = mock
-
-        if hasattr(sys.modules.get('torch'), 'utils'):
-            sys.modules['torch'].utils.data.Dataset = BaseDataset
-
-        try:
-            from data import TextDataset
-
-            class DummyTextDataset(TextDataset):
-                def __init__(self, dataset_name, prompt_format=0):
-                    self.dataset_name = dataset_name
-                    self.prompt_format = prompt_format
-                    self.classes = ['negative', 'positive']
-
-            ds = DummyTextDataset("sst2", prompt_format=0)
-            instruction, s_start, a_start, task_type = ds.prepare_dataset_keywords()
-            self.assertIn("Analyze the sentiment", instruction)
-            self.assertEqual(s_start, "Text")
-            self.assertEqual(a_start, "Answer")
-            self.assertEqual(task_type, "sentiment analysis")
-        finally:
-            for mod, orig in originals.items():
-                if orig is None:
-                    sys.modules.pop(mod, None)
+    def test_chat_template_is_shared_with_inference(self):
+        tok = MagicMock()
+        tok.apply_chat_template.side_effect = lambda m, **kw: "|".join(x["content"] for x in m) + "<gen>"
+        prompter = PromptFormatter(model_name="qwen", prompt_format=0, tokenizer=tok)
+        prompt, completion = prompter.format_training_pair("Superb film", "positive", dataset_name="sst2")
+        self.assertTrue(prompt.endswith("<gen>"))
+        self.assertEqual(prompt, prompter.format("Superb film", dataset_name="sst2"))
+        self.assertEqual(completion, "positive<|im_end|>")
+        self.assertFalse(tok.apply_chat_template.call_args.kwargs["enable_thinking"])
 
 
 class TestModernModelPrompting(unittest.TestCase):
@@ -282,7 +233,6 @@ class TestModernModelPrompting(unittest.TestCase):
     def test_qwen_formatting(self):
         prompter = PromptFormatter(model_name="qwen_4b", prompt_format=0)
         self.assertEqual(prompter.model_family, "qwen")
-        self.assertEqual(prompter.get_response_template(), "<|im_start|>assistant\n")
 
         # Zero-shot
         prompt = prompter.format("Great movie!", dataset_name="sst2")
@@ -296,41 +246,23 @@ class TestModernModelPrompting(unittest.TestCase):
         self.assertIn("Bad film", icl_prompt)
         self.assertIn("Loved it", icl_prompt)
 
-        # SFT instruction tuning
-        sft_samples = [("Great movie!", "positive")]
-        sft_prompts = prompter.format_instruction_tuning(sft_samples, dataset_name="sst2")
-        self.assertEqual(len(sft_prompts), 1)
-        self.assertIn("<|im_start|>assistant\npositive<|im_end|>", sft_prompts[0])
-
     def test_phi_formatting(self):
         prompter = PromptFormatter(model_name="phi_mini", prompt_format=0)
         self.assertEqual(prompter.model_family, "phi")
-        self.assertEqual(prompter.get_response_template(), "<|assistant|>\n")
 
         # Zero-shot
         prompt = prompter.format("Awesome acting!", dataset_name="sst2")
         self.assertIn("<|user|>", prompt)
         self.assertIn("<|assistant|>", prompt)
 
-        # SFT instruction tuning
-        sft_samples = [("Awesome acting!", "positive")]
-        sft_prompts = prompter.format_instruction_tuning(sft_samples, dataset_name="sst2")
-        self.assertIn("<|assistant|>\npositive<|end|>", sft_prompts[0])
-
     def test_gemma_formatting(self):
         prompter = PromptFormatter(model_name="gemma_26b", prompt_format=0)
         self.assertEqual(prompter.model_family, "gemma")
-        self.assertEqual(prompter.get_response_template(), "<start_of_turn>model\n")
 
         # Zero-shot
         prompt = prompter.format("Terrible plot.", dataset_name="sst2")
         self.assertIn("<start_of_turn>user", prompt)
         self.assertIn("<start_of_turn>model", prompt)
-
-        # SFT instruction tuning
-        sft_samples = [("Terrible plot.", "negative")]
-        sft_prompts = prompter.format_instruction_tuning(sft_samples, dataset_name="sst2")
-        self.assertIn("<start_of_turn>model\nnegative<end_of_turn>", sft_prompts[0])
 
 
 if __name__ == "__main__":

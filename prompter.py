@@ -200,27 +200,39 @@ class PromptFormatter:
             for t in texts
         ]
 
-    def get_response_template(self) -> str:
+    # Token that closes the assistant turn in each family's chat format; the
+    # evaluator stops generation on these. Seq2seq targets get </s> from the
+    # tokenizer itself.
+    END_OF_TURN = {
+        "qwen": "<|im_end|>",
+        "phi": "<|end|>",
+        "gemma": "<end_of_turn>",
+        "llama3": "<|eot_id|>",
+        "mistral": "</s>",
+        "zephyr": "</s>",
+        "llama2": "</s>",
+        "seq2seq": "",
+    }
+
+    def format_training_pair(
+        self,
+        text: str,
+        label: str,
+        dataset_name: str,
+        classes: Optional[Union[List[str], Tuple[str, ...]]] = None,
+        custom_instruction: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, str]:
         """
-        Returns the response template delimiter token for DataCollatorForCompletionOnlyLM.
+        Returns (prompt, completion) for supervised instruction tuning.
+
+        The prompt is exactly the zero-shot inference prompt from `format`, so
+        the model is tuned on the same text it is evaluated on; the completion
+        is the label followed by the family's end-of-turn token.
         """
-        if self.model_family == "seq2seq":
-            return "Answer:"
-        elif self.model_family == "qwen":
-            return "<|im_start|>assistant\n"
-        elif self.model_family == "phi":
-            return "<|assistant|>\n"
-        elif self.model_family == "gemma":
-            return "<start_of_turn>model\n"
-        elif self.model_family == "mistral":
-            return "[/INST]"
-        elif self.model_family == "zephyr":
-            return "<|assistant|>"
-        elif self.model_family == "llama3":
-            return "<|start_header_id|>assistant<|end_header_id|>\n\n"
-        elif self.model_family == "llama2":
-            return "[/INST]"
-        return "Answer:"
+        prompt = self.format(text, dataset_name, classes=classes, custom_instruction=custom_instruction)
+        if not isinstance(prompt, str):
+            raise NotImplementedError(f"Instruction tuning is not supported for '{self.model_family}'.")
+        return prompt, f"{label.strip()}{self.END_OF_TURN.get(self.model_family, '')}"
 
     def format_instruction_tuning(
         self,
@@ -228,142 +240,16 @@ class PromptFormatter:
         dataset_name: str,
         classes: Optional[Union[List[str], Tuple[str, ...]]] = None,
         custom_instruction: Optional[Dict[str, Any]] = None,
-    ) -> List[str]:
+    ) -> List[Tuple[str, str]]:
         """
-        Formats (input_text, target_label) sample pairs into full training prompt sequences
-        for supervised fine-tuning (SFT).
+        Formats (input_text, target_label) pairs into (prompt, completion) pairs
+        for supervised fine-tuning (see `format_training_pair`).
         """
-        info = self.get_task_info(dataset_name, classes=classes, custom_instruction=custom_instruction)
-        instruction = info["instruction"]
-        sentence_start = info["sentence_start"]
-        answer_start = info["answer_start"]
-        task_type = info["task_type"]
-        d_name = str(dataset_name).lower()
-
-        final_prompts = []
-
-        if self.model_family == "seq2seq":
-            for sample in samples:
-                text = sample[0].strip()
-                label = sample[1].strip()
-                if self.prompt_format == 0:
-                    p = f"{instruction}\n{sentence_start}: {text}\n{answer_start}: {label}"
-                elif d_name == "snips" and self.prompt_format == 3:
-                    p = f"User: {text}\n{instruction} {answer_start}: {label}"
-                else:
-                    p = f"{text}\n{instruction} {answer_start}: {label}"
-                final_prompts.append(p)
-            return final_prompts
-
-        elif self.model_family == "mistral":
-            for sample in samples:
-                text = sample[0].strip()
-                label = sample[1].strip()
-                if self.prompt_format == 0:
-                    user_text = f"{instruction}\n{sentence_start}: {text}"
-                else:
-                    user_text = f"{text} {instruction}"
-                full_text = f"<s>[INST] {user_text} [/INST] {label}</s>"
-                final_prompts.append(full_text)
-            return final_prompts
-
-        elif self.model_family == "zephyr":
-            for sample in samples:
-                text = sample[0].strip()
-                label = sample[1].strip()
-                if self.prompt_format == 0:
-                    user_text = f"{sentence_start}: {text}"
-                else:
-                    user_text = f"{text} {instruction}"
-                full_text = (
-                    f"<|system|>\n{instruction}</s>\n"
-                    f"<|user|>\n{user_text}</s>\n"
-                    f"<|assistant|>\n{label}</s>"
-                )
-                final_prompts.append(full_text)
-            return final_prompts
-
-        elif self.model_family == "llama3":
-            system_header = "<|start_header_id|>system<|end_header_id|>\n\n"
-            user_header = "<|start_header_id|>user<|end_header_id|>\n\n"
-            assistant_header = "<|start_header_id|>assistant<|end_header_id|>\n\n"
-            eot = "<|eot_id|>"
-            sys_msg = f"You are a helpful assistant. Follow the instruction exactly. Determine the {task_type}."
-
-            for sample in samples:
-                text = sample[0].strip()
-                label = sample[1].strip()
-                if self.prompt_format == 0:
-                    user_input = f"{instruction}\n{sentence_start}: {text}\n{answer_start}: "
-                else:
-                    user_input = f"{text} {instruction}"
-                full_text = (
-                    f"{system_header}{sys_msg}{eot}"
-                    f"{user_header}{user_input}{eot}"
-                    f"{assistant_header}{label}{eot}"
-                )
-                final_prompts.append(full_text)
-            return final_prompts
-
-        elif self.model_family == "qwen":
-            sys_msg = f"You are a helpful assistant. Follow the instruction exactly. Determine the {task_type}."
-            for sample in samples:
-                text = sample[0].strip()
-                label = sample[1].strip()
-                if self.prompt_format == 0:
-                    user_input = f"{instruction}\n{sentence_start}: {text}\n{answer_start}: "
-                else:
-                    user_input = f"{text} {instruction}"
-                full_text = (
-                    f"<|im_start|>system\n{sys_msg}<|im_end|>\n"
-                    f"<|im_start|>user\n{user_input}<|im_end|>\n"
-                    f"<|im_start|>assistant\n{label}<|im_end|>"
-                )
-                final_prompts.append(full_text)
-            return final_prompts
-
-        elif self.model_family == "phi":
-            for sample in samples:
-                text = sample[0].strip()
-                label = sample[1].strip()
-                if self.prompt_format == 0:
-                    user_input = f"{instruction}\n{sentence_start}: {text}\n{answer_start}: "
-                else:
-                    user_input = f"{text} {instruction}"
-                full_text = (
-                    f"<|user|>\n{user_input}<|end|>\n"
-                    f"<|assistant|>\n{label}<|end|>"
-                )
-                final_prompts.append(full_text)
-            return final_prompts
-
-        elif self.model_family == "gemma":
-            for sample in samples:
-                text = sample[0].strip()
-                label = sample[1].strip()
-                if self.prompt_format == 0:
-                    user_input = f"{instruction}\n{sentence_start}: {text}\n{answer_start}: "
-                else:
-                    user_input = f"{text} {instruction}"
-                full_text = (
-                    f"<start_of_turn>user\n{user_input}<end_of_turn>\n"
-                    f"<start_of_turn>model\n{label}<end_of_turn>"
-                )
-                final_prompts.append(full_text)
-            return final_prompts
-
-        else:
-            sys_msg = f"You are a helpful assistant. Your task is {task_type}. Answer ONLY with one of the valid class names. Do not explain."
-            for sample in samples:
-                text = sample[0].strip()
-                label = sample[1].strip()
-                if self.prompt_format == 0:
-                    user_query = f"{instruction}\n\nInput: {text}\nAnswer:"
-                else:
-                    user_query = f"{text}\n{instruction}"
-                full_text = f"<s>[INST] <<SYS>>\n{sys_msg}\n<</SYS>>\n\n{user_query} [/INST] {label} </s>"
-                final_prompts.append(full_text)
-            return final_prompts
+        return [
+            self.format_training_pair(text, label, dataset_name, classes=classes,
+                                      custom_instruction=custom_instruction)
+            for text, label in samples
+        ]
 
     def _format_seq2seq(self, sample: str, info: Dict[str, Any], shots: Optional[List[Tuple[str, str]]] = None) -> str:
         instruction = info["instruction"]
