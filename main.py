@@ -374,7 +374,12 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
             
             optimizer.step()
             scheduler.step()
-            
+
+        # Without a validation split there is no signal for early stopping:
+        # train every epoch and keep the final weights.
+        if len(valloader.dataset) == 0:
+            continue
+
         net.eval()
         val_loss = 0.0
         val_n = 0
