@@ -28,7 +28,7 @@ except (ImportError, AttributeError):
 
 from transformers import BertModel, BertTokenizer
 from functools import lru_cache
-from sample_pool import SamplePool
+from sample_pool import SamplePool, encode_for_classifier
 from rng import RNGStream, RNGController
 
 class SeededRandomSampler(RandomSampler):
@@ -463,14 +463,7 @@ class FineTuningDataset(TextDataset):
         text = str(self.train_text[index] if self.train else self.test_text[index])
         target = self.train_targets[index] if self.train else self.test_targets[index]
 
-        inputs = self.tokenizer.encode_plus(
-            text,
-            add_special_tokens=True,
-            max_length=self.max_len,
-            padding='max_length',
-            truncation=True,
-            return_token_type_ids=True
-        )
+        inputs = encode_for_classifier(self.tokenizer, text, self.max_len)
         ids = inputs['input_ids']
         mask = inputs['attention_mask']
         token_type_ids = inputs["token_type_ids"]

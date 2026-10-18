@@ -366,6 +366,31 @@ class TestDatasetWrappersRetrofit(unittest.TestCase):
             self.assertEqual(len(batch["targets"]), 2)
 
 
+class TestClassifierEncoding(unittest.TestCase):
+
+    def test_boolq_keeps_the_question_and_truncates_the_passage(self):
+        from sample_pool import encode_for_classifier, split_text_pair
+
+        class PairTokenizer:
+            def encode_plus(self, first, second=None, max_length=None, truncation=None, **kw):
+                self.call = (first, second, truncation)
+                return {"input_ids": [0] * max_length}
+
+        text = "Passage: " + "long context " * 200 + "\nQuestion: is it raining"
+        self.assertEqual(split_text_pair(text)[0], "Question: is it raining")
+        tok = PairTokenizer()
+        encode_for_classifier(tok, text, 128)
+        first, second, truncation = tok.call
+        self.assertEqual(first, "Question: is it raining")
+        self.assertTrue(second.startswith("Passage: long context"))
+        self.assertEqual(truncation, "only_second")
+
+    def test_single_texts_are_unchanged(self):
+        from sample_pool import split_text_pair
+        self.assertIsNone(split_text_pair("Premise: a; Hypothesis: b"))
+        self.assertIsNone(split_text_pair("just a sentence"))
+
+
 class TestEffectiveNumLabelled(unittest.TestCase):
 
     def test_rounds_up_to_a_multiple_of_the_classes(self):

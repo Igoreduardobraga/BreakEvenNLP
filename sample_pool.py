@@ -31,6 +31,30 @@ def _deterministic_permute(elements: list, seed: int) -> list:
         return copy_el
 
 
+# BoolQ is stored as "Passage: ...\nQuestion: ..." (see data.py). A classifier
+# input truncated at max_len would cut the question off the end, so it is
+# encoded as the pair (question, passage) and only the passage is shortened.
+_PAIR_MARKERS = (("Passage: ", "\nQuestion: "),)
+
+
+def split_text_pair(text: str):
+    """(question, passage) for texts with a long context before the question, else None."""
+    for head, sep in _PAIR_MARKERS:
+        if text.startswith(head) and sep in text:
+            passage, question = text.rsplit(sep, 1)
+            return sep.strip() + " " + question, passage
+    return None
+
+
+def encode_for_classifier(tokenizer, text: str, max_len: int):
+    kwargs = dict(add_special_tokens=True, max_length=max_len, padding="max_length",
+                  return_token_type_ids=True)
+    pair = split_text_pair(text)
+    if pair is None:
+        return tokenizer.encode_plus(text, truncation=True, **kwargs)
+    return tokenizer.encode_plus(*pair, truncation="only_second", **kwargs)
+
+
 def effective_num_labelled(num_labelled: int, num_classes: int) -> int:
     """Samples actually selected for a budget N: ceil(N / classes) per class."""
     if num_labelled <= 0 or num_classes <= 0:
@@ -249,14 +273,7 @@ class _TorchDatasetAdapter:
         target = self.targets[index]
 
         if self.tokenizer is not None and hasattr(self.tokenizer, "encode_plus"):
-            inputs = self.tokenizer.encode_plus(
-                text,
-                add_special_tokens=True,
-                max_length=self.max_len,
-                padding="max_length",
-                truncation=True,
-                return_token_type_ids=True,
-            )
+            inputs = encode_for_classifier(self.tokenizer, text, self.max_len)
             ids = inputs.get("input_ids", [])
             mask = inputs.get("attention_mask", [])
             token_type_ids = inputs.get("token_type_ids", [])
