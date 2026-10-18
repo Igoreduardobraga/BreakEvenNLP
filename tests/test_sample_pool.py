@@ -366,6 +366,16 @@ class TestDatasetWrappersRetrofit(unittest.TestCase):
             self.assertEqual(len(batch["targets"]), 2)
 
 
+class TestEffectiveNumLabelled(unittest.TestCase):
+
+    def test_rounds_up_to_a_multiple_of_the_classes(self):
+        from sample_pool import effective_num_labelled
+        self.assertEqual(effective_num_labelled(10, 7), 14)
+        self.assertEqual(effective_num_labelled(10, 2), 10)
+        self.assertEqual(effective_num_labelled(50, 4), 52)
+        self.assertEqual(effective_num_labelled(0, 4), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
 

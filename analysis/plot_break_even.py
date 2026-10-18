@@ -38,6 +38,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from prompter import PromptFormatter  # noqa: E402
+from sample_pool import effective_num_labelled  # noqa: E402
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("plot_break_even")
 
@@ -172,7 +176,11 @@ def load_all(results_dir: Path) -> pd.DataFrame:
     if not frames:
         raise SystemExit(f"nenhum summary.parquet em {results_dir}")
     full = pd.concat(frames, ignore_index=True)
-    full["n"] = full["configuration"].astype(str).str.extract(N_RE)[0].astype(int)
+    # O pool seleciona ceil(N/classes) por classe: o eixo x usa esse N efetivo
+    # (ex.: SNIPS N=10 -> 14). O N nominal fica em n_nominal.
+    full["n_nominal"] = full["configuration"].astype(str).str.extract(N_RE)[0].astype(int)
+    full["n"] = [effective_num_labelled(n, len(PromptFormatter.DEFAULT_CLASSES.get(ds, ())))
+                 for n, ds in zip(full["n_nominal"], full["dataset"])]
     full["f1"] = full.apply(metric_for, axis=1)
     full["f1"] = pd.to_numeric(full["f1"], errors="coerce")
     full = full.dropna(subset=["n", "f1"])
@@ -190,7 +198,7 @@ def load_all(results_dir: Path) -> pd.DataFrame:
 
 
 def aggregate(full: pd.DataFrame) -> pd.DataFrame:
-    agg = (full.groupby(["dataset", "line", "n"])["f1"]
+    agg = (full.groupby(["dataset", "line", "n", "n_nominal"])["f1"]
            .agg(["mean", "std", "count"]).reset_index()
            .rename(columns={"mean": "f1_mean", "std": "f1_std", "count": "n_folds"}))
     agg["f1_std"] = agg["f1_std"].fillna(0.0)

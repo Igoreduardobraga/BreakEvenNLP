@@ -31,6 +31,13 @@ def _deterministic_permute(elements: list, seed: int) -> list:
         return copy_el
 
 
+def effective_num_labelled(num_labelled: int, num_classes: int) -> int:
+    """Samples actually selected for a budget N: ceil(N / classes) per class."""
+    if num_labelled <= 0 or num_classes <= 0:
+        return num_labelled
+    return math.ceil(num_labelled / num_classes) * num_classes
+
+
 class SamplePool:
     """
     Deep module managing dataset samples, stratified train/test partitions,
@@ -117,7 +124,7 @@ class SamplePool:
     def _select_labelled_data(self):
         """Applies stratified budget selection to train and test splits."""
         if self.num_labelled > 0 and len(self.train_targets) > 0:
-            to_select = math.ceil(self.num_labelled / self.num_classes)
+            to_select = effective_num_labelled(self.num_labelled, self.num_classes) // self.num_classes
             texts = []
             labels = []
             new_train_indices = []
