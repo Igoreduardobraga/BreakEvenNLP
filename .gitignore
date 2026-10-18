@@ -9,3 +9,5 @@ result_original
 token.txt
 .venv/
 .pytest_cache/
+results*
+logs*
