@@ -36,6 +36,9 @@ SUMMARY_COLUMNS = [
     "co2_kg",
     "hardware",
     "carbon_intensity",
+    "gpu_energy_kwh",
+    "cpu_energy_kwh",
+    "energy_method",
     "engine",
     "quant_format",
     "decoding",
@@ -279,7 +282,8 @@ class ResultStore:
             "prompt_format",
         }
         float_cols = {"f1_macro", "f1_prompting", "f1_macro_icl", "duration_seconds",
-                      "energy_kwh", "co2_kg", "carbon_intensity"}
+                      "energy_kwh", "co2_kg", "carbon_intensity",
+                      "gpu_energy_kwh", "cpu_energy_kwh"}
 
         for k, v in raw_row.items():
             if v == "" or v is None:
@@ -330,6 +334,9 @@ class ResultStore:
         co2_kg: Optional[float] = None,
         hardware: Optional[str] = None,
         carbon_intensity: Optional[float] = None,
+        gpu_energy_kwh: Optional[float] = None,
+        cpu_energy_kwh: Optional[float] = None,
+        energy_method: Optional[str] = None,
         engine: Optional[str] = None,
         quant_format: Optional[str] = None,
         decoding: Optional[str] = None,
@@ -365,6 +372,9 @@ class ResultStore:
             "co2_kg": co2_kg if co2_kg is not None else "",
             "hardware": hardware or "",
             "carbon_intensity": carbon_intensity if carbon_intensity is not None else "",
+            "gpu_energy_kwh": gpu_energy_kwh if gpu_energy_kwh is not None else "",
+            "cpu_energy_kwh": cpu_energy_kwh if cpu_energy_kwh is not None else "",
+            "energy_method": energy_method or "",
             "engine": engine or "hf",
             "quant_format": quant_format or "",
             "decoding": decoding or "free",
@@ -473,6 +483,9 @@ class ResultStore:
                 co2_kg=co2_kg,
                 hardware=hardware,
                 carbon_intensity=carbon_intensity,
+                gpu_energy_kwh=gpu_energy_kwh,
+                cpu_energy_kwh=cpu_energy_kwh,
+                energy_method=energy_method,
                 engine=engine,
                 quant_format=quant_format,
                 decoding=decoding,
@@ -494,6 +507,9 @@ class ResultStore:
         co2_kg: Optional[float] = None,
         hardware: Optional[str] = None,
         carbon_intensity: Optional[float] = None,
+        gpu_energy_kwh: Optional[float] = None,
+        cpu_energy_kwh: Optional[float] = None,
+        energy_method: Optional[str] = None,
         engine: Optional[str] = None,
         quant_format: Optional[str] = None,
         decoding: Optional[str] = None,
@@ -531,6 +547,9 @@ class ResultStore:
             "co2_kg": co2_kg,
             "hardware": hardware,
             "carbon_intensity": carbon_intensity,
+            "gpu_energy_kwh": gpu_energy_kwh,
+            "cpu_energy_kwh": cpu_energy_kwh,
+            "method": energy_method,
         }
         legacy_dict["execution"] = {
             "engine": engine or "hf",

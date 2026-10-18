@@ -713,6 +713,9 @@ def main():
             co2_kg=sust_report.co2_kg,
             hardware=sust_report.hardware,
             carbon_intensity=sust_report.carbon_intensity,
+            gpu_energy_kwh=sust_report.gpu_energy_kwh,
+            cpu_energy_kwh=sust_report.cpu_energy_kwh,
+            energy_method=sust_report.method,
             engine=ENGINE,
             quant_format=(
                 'bitsandbytes' if ENGINE == 'vllm'
