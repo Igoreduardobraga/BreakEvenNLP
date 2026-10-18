@@ -100,7 +100,7 @@ STYLE_COMBOS = (("-", "o"), ("--", "s"), (":", "D"), ("-.", "^"),
 
 def style_for(line: str):
     """(cor, linestyle, marker): cor pela abordagem, estilo pelo modelo."""
-    exp, model = exp_of(line), line.split("/", 1)[0] if "/" in line else line
+    exp, model = exp_of(line), model_of(line)
     color = APPROACH_COLOR.get(exp, "#7f7f7f")
     try:
         idx = MODEL_ORDER.index(model)
@@ -127,17 +127,30 @@ def short_model(exp_dir_model: str, model_col: str) -> str:
 
 def pretty_label(line: str) -> str:
     """'mistral/instruction_tuning' -> 'Instruction Tuning (Mistral-7B)'."""
-    if "/" in line:
-        model_short, exp = line.split("/", 1)
-    else:
-        model_short, exp = line, ""
+    model_part, exp = line.split("/", 1) if "/" in line else (line, "")
+    model_short, _, variant = model_part.partition("@")
     approach = APPROACH_PRETTY.get(exp, exp)
     model = MODEL_PRETTY.get(model_short, model_short)
+    if variant:
+        model = f"{model}, {variant}"
     return f"{approach} ({model})" if approach else model
 
 
 def exp_of(line: str) -> str:
     return line.split("/", 1)[1] if "/" in line else line
+
+
+def model_of(line: str) -> str:
+    """Modelo sem o sufixo de variante: 'qwen@vllm-guided/icl' -> 'qwen'."""
+    return line.split("/", 1)[0].partition("@")[0]
+
+
+def variant_of(engine, decoding) -> str:
+    """'' para hf/free (padrao); senao '@vllm-guided' etc."""
+    parts = [str(engine)] if engine != "hf" else []
+    if decoding != "free":
+        parts.append(str(decoding))
+    return "@" + "-".join(parts) if parts else ""
 
 
 def load_all(results_dir: Path) -> pd.DataFrame:
@@ -165,7 +178,14 @@ def load_all(results_dir: Path) -> pd.DataFrame:
     full = full.dropna(subset=["n", "f1"])
     full["model_short"] = [short_model(e, m) for e, m in
                            zip(full["exp_dir"], full["model"])]
-    full["line"] = full["model_short"] + "/" + full["experiment_type"].astype(str)
+    # Resumos antigos nao tem engine/decoding: eram sempre hf/free.
+    for col, default in (("engine", "hf"), ("decoding", "free")):
+        if col not in full.columns:
+            full[col] = default
+        full[col] = full[col].replace("", np.nan).fillna(default)
+    full["variant"] = [variant_of(e, d) for e, d in zip(full["engine"], full["decoding"])]
+    full["line"] = (full["model_short"] + full["variant"] + "/"
+                    + full["experiment_type"].astype(str))
     return full
 
 

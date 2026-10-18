@@ -65,6 +65,27 @@ PREDICTION_COLUMNS = [
 ]
 
 
+def experiment_dir_name(
+    experiment_type: str,
+    model: str,
+    model_size: str,
+    engine: str = "hf",
+    decoding: str = "free",
+) -> str:
+    """Directory name for one (approach, model) run family.
+
+    Non-default engine/decoding get a suffix so runs with different
+    inference settings never share (and skip) each other's folds; the
+    default hf/free name is unchanged for existing results.
+    """
+    name = f"{experiment_type}_{model}_{model_size}"
+    if engine and engine != "hf":
+        name += f"_{engine}"
+    if decoding and decoding != "free":
+        name += f"_{decoding}"
+    return name
+
+
 def _get_git_commit() -> str:
     """Best-effort capture of current git commit hash."""
     try:

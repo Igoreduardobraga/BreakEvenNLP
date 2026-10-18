@@ -7,7 +7,7 @@ from transfer_learning.models import BERTBase, RoBERTaBase, DeBERTaBase
 from evaluator import ModelEvaluator, _parse_results as parse_results, EvaluationResult
 from prompter import PromptFormatter
 from rng import RNGController, RNGStream
-from result_store import ResultStore
+from result_store import ResultStore, experiment_dir_name
 from sustainability import SustainabilityTracker
 import re
 import random
@@ -504,7 +504,7 @@ def main():
         parser.error("--decoding guided requires --engine vllm")
     if ENGINE == 'vllm' and EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
         parser.error("--engine vllm does not support instruction_tuning (in-memory tuned model)")
-    RESULTS_PATH = os.path.join('results', f'{args.experiment_name}', f'{EXPERIMENT_TYPE}_{MODEL}_{MODEL_SIZE}', args.configuration_name, DATASET, FACTOR)
+    RESULTS_PATH = os.path.join('results', f'{args.experiment_name}', experiment_dir_name(EXPERIMENT_TYPE, MODEL, MODEL_SIZE, ENGINE, DECODING), args.configuration_name, DATASET, FACTOR)
     if not os.path.exists(RESULTS_PATH):
         os.makedirs(RESULTS_PATH)
 
