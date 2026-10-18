@@ -10,11 +10,16 @@ a todas as abordagens (TEST_SET_ARGS). Suporta:
 - Gestão de logs em arquivo por execução
 - Retomada inteligente (pula execuções já finalizadas)
 - Suporte a alocação de GPU (CUDA_VISIBLE_DEVICES)
+- Agrupamento de prompting/ICL: as configurações pendentes de um mesmo
+  modelo rodam num único main.py --sweep, carregando o modelo uma vez
+  (desligue com --no-group)
 """
 
 import os
 import sys
 import argparse
+import hashlib
+import json
 import subprocess
 import time
 from typing import List, Dict, Any, Optional
@@ -561,18 +566,105 @@ def is_already_completed(exp: Dict[str, Any]) -> bool:
     return completed_count == total_expected
 
 
-def run_experiment(exp: Dict[str, Any], gpu_id: Optional[str] = None, logs_dir: str = "logs") -> bool:
-    """Executa um experimento com isolamento de GPU e redirecionamento de logs."""
+# Tipos que carregam o modelo uma vez por processo: agrupar seus comandos
+# num unico main.py --sweep evita recarregar os pesos a cada (dataset, N).
+# FT e IT recriam o modelo a cada fold, entao nao ganham nada.
+GROUPABLE_TYPES = ("prompting", "icl", "icl_similarity")
+
+# Flags que variam dentro de um grupo; as demais tem de ser identicas.
+SWEEP_FLAGS = {
+    "--dataset": ("dataset", str),
+    "--num_labelled": ("num_labelled", int),
+    "--configuration_name": ("configuration_name", str),
+    "--rskf_splits": ("rskf_splits", int),
+}
+
+
+def _strip_sweep_flags(cmd_args: List[str]) -> List[str]:
+    out, skip = [], False
+    for arg in cmd_args:
+        if skip:
+            skip = False
+        elif arg in SWEEP_FLAGS:
+            skip = True
+        else:
+            out.append(arg)
+    return out
+
+
+def _sweep_entry(cmd_args: List[str]) -> Dict[str, Any]:
+    entry = {}
+    for flag, (key, cast) in SWEEP_FLAGS.items():
+        entry[key] = cast(cmd_args[cmd_args.index(flag) + 1])
+    return entry
+
+
+def _exp_tag(exp: Dict[str, Any]) -> str:
+    return f"{exp['experiment_type']}_{exp['model']}_{exp['dataset']}_N{exp['num_labelled']}"
+
+
+def build_jobs(experiments: List[Dict[str, Any]], group: bool) -> List[Dict[str, Any]]:
+    """Um job por processo main.py: um experimento, ou um grupo via --sweep."""
+    jobs: List[Dict[str, Any]] = []
+    groups: Dict[tuple, Dict[str, Any]] = {}
+    for exp in experiments:
+        if not group or exp["experiment_type"] not in GROUPABLE_TYPES:
+            jobs.append({"members": [exp], "cmd_args": exp["cmd_args"], "tag": _exp_tag(exp)})
+            continue
+        key = tuple(_strip_sweep_flags(exp["cmd_args"]))
+        if key not in groups:
+            groups[key] = {"members": [], "base_args": list(key)}
+            jobs.append(groups[key])
+        groups[key]["members"].append(exp)
+
+    for job in jobs:
+        if "base_args" not in job:
+            continue
+        members = job["members"]
+        if len(members) == 1:
+            job.update(cmd_args=members[0]["cmd_args"], tag=_exp_tag(members[0]))
+            continue
+        first = members[0]
+        digest = hashlib.sha1(" ".join(job["base_args"]).encode()).hexdigest()[:8]
+        job["tag"] = f"{first['experiment_type']}_{first['model']}_{first['model_size']}_sweep_{digest}"
+        job["sweep"] = [_sweep_entry(m["cmd_args"]) for m in members]
+    return jobs
+
+
+def describe_job(job: Dict[str, Any]) -> str:
+    members = job["members"]
+    first = members[0]
+    if "sweep" not in job:
+        return f"({first['script_origin']}) {first['model']} | {first['dataset']} | N={first['num_labelled']}"
+    configs = ", ".join(f"{m['dataset']}:N={m['num_labelled']}" for m in members)
+    return (f"({first['script_origin']}) {first['model']} {first['model_size']} | "
+            f"GRUPO com {len(members)} configurações, modelo carregado 1x: {configs}")
+
+
+def job_command(job: Dict[str, Any], logs_dir: str) -> List[str]:
+    if "sweep" not in job:
+        return job["cmd_args"]
+    sweep_path = os.path.join(logs_dir, "sweeps", f"{job['tag']}.json")
+    return job["base_args"] + ["--sweep", sweep_path]
+
+
+def run_job(job: Dict[str, Any], gpu_id: Optional[str] = None, logs_dir: str = "logs") -> bool:
+    """Executa um job com isolamento de GPU e redirecionamento de logs."""
     os.makedirs(logs_dir, exist_ok=True)
-    exp_tag = f"{exp['experiment_type']}_{exp['model']}_{exp['dataset']}_N{exp['num_labelled']}"
-    log_file = os.path.join(logs_dir, f"{exp_tag}.log")
+    log_file = os.path.join(logs_dir, f"{job['tag']}.log")
+    cmd_args = job_command(job, logs_dir)
+    if "sweep" in job:
+        sweep_path = cmd_args[-1]
+        os.makedirs(os.path.dirname(sweep_path), exist_ok=True)
+        with open(sweep_path, "w") as f:
+            json.dump(job["sweep"], f, indent=2)
 
     env = os.environ.copy()
     if gpu_id is not None:
         env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
-    cmd_str = " ".join(exp["cmd_args"])
-    print(f"\n[RUNNING] {exp['script_origin']} | {exp['model']} | {exp['dataset']} | N={exp['num_labelled']}")
+    cmd_str = " ".join(cmd_args)
+    print(f"\n[RUNNING] {describe_job(job)}")
     if gpu_id is not None:
         print(f"          GPU: {gpu_id}")
     print(f"          Log: {log_file}")
@@ -585,7 +677,7 @@ def run_experiment(exp: Dict[str, Any], gpu_id: Optional[str] = None, logs_dir: 
         f_out.flush()
 
         process = subprocess.Popen(
-            exp["cmd_args"],
+            cmd_args,
             env=env,
             stdout=f_out,
             stderr=subprocess.STDOUT
@@ -668,6 +760,11 @@ def main():
         choices=["free", "guided"],
         help="Decoding repassado ao main.py; guided exige --engine vllm."
     )
+    parser.add_argument(
+        "--no-group",
+        action="store_true",
+        help="Um processo por configuração, sem agrupar prompting/ICL via --sweep."
+    )
 
     args = parser.parse_args()
     if args.decoding == "guided" and args.engine != "vllm":
@@ -707,43 +804,44 @@ def main():
         print("Nenhum experimento correspondeu aos filtros fornecidos.")
         return
 
-    # 3. Dry-run ou Execução
+    # 3. Separa concluídos e agrupa os pendentes em jobs
+    pending, done = [], []
+    for exp in filtered_experiments:
+        (done if not args.force and is_already_completed(exp) else pending).append(exp)
+    jobs = build_jobs(pending, group=not args.no_group)
+    print(f" Já concluídas: {len(done)} | Pendentes: {len(pending)} em {len(jobs)} processo(s)")
+
     if args.dry_run:
-        print("\n[MODO DRY-RUN] Nenhum comando será executado. Listando comandos:\n")
-        for idx, exp in enumerate(filtered_experiments, 1):
-            already_done = is_already_completed(exp)
-            status_tag = "[JÁ CONCLUÍDO]" if already_done else "[PENDENTE]"
-            cmd_line = " ".join(exp["cmd_args"])
-            print(f"{idx:3d}. {status_tag} ({exp['script_origin']}) {exp['model']} | {exp['dataset']} | N={exp['num_labelled']}")
-            print(f"     Comando: {cmd_line}\n")
-        print(f"Total: {total_found} comandos mapeados.")
+        print("\n[MODO DRY-RUN] Nenhum comando será executado.\n")
+        for exp in done:
+            print(f"  [JÁ CONCLUÍDO] ({exp['script_origin']}) {exp['model']} | {exp['dataset']} | N={exp['num_labelled']}")
+        for idx, job in enumerate(jobs, 1):
+            print(f"\n{idx:3d}. [PENDENTE] {describe_job(job)}")
+            print(f"     Comando: {' '.join(job_command(job, args.logs_dir))}")
         return
 
     # 4. Execução real
     success_count = 0
-    skipped_count = 0
     failed_count = 0
 
-    for idx, exp in enumerate(filtered_experiments, 1):
+    for idx, job in enumerate(jobs, 1):
         print(f"\n-------------------------------------------------------")
-        print(f"Progresso: [{idx}/{total_found}]")
-
-        if not args.force and is_already_completed(exp):
-            print(f"[PULADO] Resultados já existem para {exp['model']} | {exp['dataset']} | N={exp['num_labelled']}. (Use --force para reexecutar)")
-            skipped_count += 1
-            continue
-
-        ok = run_experiment(exp, gpu_id=args.gpus, logs_dir=args.logs_dir)
-        if ok:
+        print(f"Progresso: [{idx}/{len(jobs)}]")
+        ok = run_job(job, gpu_id=args.gpus, logs_dir=args.logs_dir)
+        if "sweep" in job:
+            # O processo de um grupo pode falhar em parte: conta por configuração.
+            finished = sum(is_already_completed(m) for m in job["members"])
+            success_count += finished
+            failed_count += len(job["members"]) - finished
+        elif ok:
             success_count += 1
         else:
             failed_count += 1
 
     print(f"\n=======================================================")
     print(f" Execuções Concluídas!")
-    print(f" Sucesso: {success_count} | Pulados: {skipped_count} | Falhas: {failed_count}")
+    print(f" Sucesso: {success_count} | Pulados: {len(done)} | Falhas: {failed_count}")
     print(f"=======================================================\n")
-
 
 if __name__ == "__main__":
     main()

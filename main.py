@@ -24,6 +24,8 @@ from sklearn.model_selection import RepeatedStratifiedKFold, train_test_split
 from torch.utils.data import DataLoader
 import time
 import shutil
+import sys
+import traceback
 import torch.nn.functional as F
 
 
@@ -493,6 +495,7 @@ def main():
     parser.add_argument('--rskf_splits', default=10, type=int, help='Number of folds for RepeatedStratifiedKFold (K).')
     parser.add_argument('--rskf_repeats', default=1, type=int, help='Number of repeats for RepeatedStratifiedKFold (R).')
     parser.add_argument('--rskf_seed', default=27, type=int, help='Random state for RepeatedStratifiedKFold.')
+    parser.add_argument('--sweep', default=None, type=str, help='JSON list of configurations (dataset, num_labelled, configuration_name, rskf_splits) to run in this process with the model loaded once.')
 
     parser.add_argument('-f')
     args = parser.parse_args()
@@ -520,10 +523,6 @@ def main():
         parser.error("--decoding guided requires --engine vllm")
     if ENGINE == 'vllm' and EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
         parser.error("--engine vllm does not support instruction_tuning (in-memory tuned model)")
-    RESULTS_PATH = os.path.join('results', f'{args.experiment_name}', experiment_dir_name(EXPERIMENT_TYPE, MODEL, MODEL_SIZE, ENGINE, DECODING), args.configuration_name, DATASET, FACTOR)
-    if not os.path.exists(RESULTS_PATH):
-        os.makedirs(RESULTS_PATH)
-
     BATCH_SIZE = args.batch_size
     NUM_EPOCHS = args.num_epochs
     LEARNING_RATE = args.lr
@@ -600,6 +599,55 @@ def main():
             model_name = 'microsoft/deberta-v3-base'
         else:
             model_name = f'{MODEL}-{MODEL_SIZE}{"-uncased" if MODEL == "bert" else ""}'
+
+    configurations = load_sweep(args.sweep, parser) if args.sweep else [{}]
+    failed = []
+    for config in configurations:
+        try:
+            run_configuration(config)
+        except Exception:
+            if len(configurations) == 1:
+                raise
+            # One bad configuration must not cost the rest of the sweep the
+            # model load; its finished folds are kept and it resumes on rerun.
+            traceback.print_exc()
+            failed.append(config)
+    if failed:
+        print(f'{len(failed)}/{len(configurations)} sweep configurations failed: {failed}')
+        sys.exit(1)
+
+
+SWEEP_KEYS = ('dataset', 'num_labelled', 'configuration_name', 'rskf_splits')
+
+
+def load_sweep(path, parser):
+    """Configurations to run with the already loaded model.
+
+    JSON list of objects; each may set any of SWEEP_KEYS and inherits the
+    command-line value for the keys it omits.
+    """
+    with open(path) as f:
+        configurations = json.load(f)
+    datasets = next(a.choices for a in parser._actions if a.dest == 'dataset')
+    for config in configurations:
+        unknown = set(config) - set(SWEEP_KEYS)
+        if unknown:
+            parser.error(f"--sweep: unsupported keys {sorted(unknown)} (allowed: {SWEEP_KEYS})")
+        if config.get('dataset', args.dataset) not in datasets:
+            parser.error(f"--sweep: unknown dataset {config['dataset']!r}")
+    return configurations
+
+
+def run_configuration(config):
+    """Runs every RSKF fold of one (dataset, num_labelled) configuration."""
+    global DATASET, RESULTS_PATH
+    for key, value in config.items():
+        setattr(args, key, value)
+    DATASET = args.dataset
+    RESULTS_PATH = os.path.join('results', f'{args.experiment_name}', experiment_dir_name(EXPERIMENT_TYPE, MODEL, MODEL_SIZE, ENGINE, DECODING), args.configuration_name, DATASET, FACTOR)
+    if not os.path.exists(RESULTS_PATH):
+        os.makedirs(RESULTS_PATH)
+    print(f'=== Configuration {args.configuration_name} | dataset={DATASET} | num_labelled={args.num_labelled} ===')
 
     result_store = ResultStore(
         results_path=RESULTS_PATH,
