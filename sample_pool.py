@@ -17,12 +17,13 @@ except ImportError:
 
 
 def _deterministic_permute(elements: list, seed: int) -> list:
-    """Permutes a list deterministically using torch if available, otherwise random.Random."""
+    """Permutes a list deterministically using torch if available, otherwise random.Random.
+
+    Uses a local generator: torch.manual_seed would also reseed the CUDA RNG
+    (all devices) as a side effect. Same permutation as the global CPU RNG.
+    """
     if _HAS_TORCH:
-        old_state = torch.get_rng_state()
-        torch.manual_seed(seed)
-        perm = torch.randperm(len(elements)).tolist()
-        torch.set_rng_state(old_state)
+        perm = torch.randperm(len(elements), generator=torch.Generator().manual_seed(seed)).tolist()
         return [elements[i] for i in perm]
     else:
         rng = random.Random(seed)
@@ -55,11 +56,18 @@ def encode_for_classifier(tokenizer, text: str, max_len: int):
     return tokenizer.encode_plus(*pair, truncation="only_second", **kwargs)
 
 
-def effective_num_labelled(num_labelled: int, num_classes: int) -> int:
-    """Samples actually selected for a budget N: ceil(N / classes) per class."""
+def effective_num_labelled(num_labelled: int, num_classes: int, class_counts=None) -> int:
+    """Samples actually selected for a budget N: ceil(N / classes) per class.
+
+    With class_counts (samples of each class in the training fold) a class
+    that runs out contributes only what it has, as the selection does.
+    """
     if num_labelled <= 0 or num_classes <= 0:
         return num_labelled
-    return math.ceil(num_labelled / num_classes) * num_classes
+    per_class = math.ceil(num_labelled / num_classes)
+    if class_counts is None:
+        return per_class * num_classes
+    return int(sum(min(int(c), per_class) for c in class_counts))
 
 
 class SamplePool:

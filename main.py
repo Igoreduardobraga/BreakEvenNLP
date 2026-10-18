@@ -2,6 +2,7 @@
 
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments, Trainer, DataCollatorForSeq2Seq, get_linear_schedule_with_warmup, EarlyStoppingCallback
 from datasets import Dataset
+from sample_pool import effective_num_labelled
 from data import ICLDataset, FineTuningDataset, DatasetLoader, PromptDataset, SimilarityICLDataset, InstructionTuningDataset, TextDataset, load_text_and_targets, SeededRandomSampler
 from transfer_learning.models import BERTBase, RoBERTaBase, DeBERTaBase
 from evaluator import ModelEvaluator, _parse_results as parse_results, EvaluationResult
@@ -156,6 +157,9 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
             "and evaluate it via --experiment_type icl/prompting --engine vllm."
         )
     LoraConfig, get_peft_model, prepare_model_for_kbit_training = _require_it_deps()
+    # LoRA weights are created on the GPU before the Trainer seeds anything:
+    # seed them per fold so a resumed run reproduces the same adapter.
+    RNGController.seed_all(randomness_factor_seeds['model_initialisation'])
     dataset = InstructionTuningDataset(
         dataset_name=DATASET,
         train_size=args.train_size,
@@ -296,27 +300,33 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
 
     return EvaluationResult(golden, predicted, decoded, prompts=prompts, inputs=inputs)
 
-def make_train_val_loaders(dataset, batch_size, shuffle_seed):
+# Early stopping needs a validation split large enough to rank epochs: below
+# FT_MIN_VAL_SAMPLES (10% of N, i.e. N < 250) the model trains every epoch on
+# all N labelled samples, as ICL uses all N. With holdout_val the LR sweep
+# still holds out 10% in that regime, only to score the final model.
+FT_VAL_RATIO = 0.1
+FT_MIN_VAL_SAMPLES = 25
+
+
+def make_train_val_loaders(dataset, batch_size, shuffle_seed, holdout_val=False):
+    """Returns (train_loader, val_loader, early_stopping)."""
     indices = list(range(len(dataset.train_text)))
     y = np.array(dataset.train_targets)
-    n_total = len(indices)
-    n_classes = dataset.n_classes  
-    test_size_ratio = 0.1          
+    n_classes = dataset.n_classes
+    n_val = int(len(indices) * FT_VAL_RATIO)
 
-    n_val = int(n_total * test_size_ratio)
-
-    if n_val < n_classes:
-        print(f"Warning: Training set is too small for validation split")
-        print("Using the full dataset for training and skipping early stopping")
-        tr_idx = indices  
-        val_idx = []      
-    else:
+    early_stopping = n_val >= max(n_classes, FT_MIN_VAL_SAMPLES)
+    if early_stopping or (holdout_val and n_val >= n_classes):
         tr_idx, val_idx = train_test_split(
-            indices, 
-            test_size=test_size_ratio,
-            random_state=shuffle_seed, 
+            indices,
+            test_size=FT_VAL_RATIO,
+            random_state=shuffle_seed,
             stratify=y
         )
+    else:
+        print(f"Validation split of {n_val} samples is too small: training on all "
+              f"{len(indices)} samples for every epoch, without early stopping")
+        tr_idx, val_idx = indices, []
 
     train_ds = copy.copy(dataset);  train_ds.train = True
     val_ds   = copy.copy(dataset);  val_ds.train   = True
@@ -332,10 +342,14 @@ def make_train_val_loaders(dataset, batch_size, shuffle_seed):
                               pin_memory=True)
     
     val_loader   = DataLoader(val_ds, batch_size=64, shuffle=False, pin_memory=True)
-    
-    return train_loader, val_loader
+
+    return train_loader, val_loader, early_stopping
 
 def ft_experiment(randomness_factor_seeds, train_test_indices=None):
+    # The encoder's internal dropout draws from the global RNG (only the head
+    # dropout has its own stream): seed it per fold with the model-randomness
+    # factor so each fold is reproducible on its own.
+    RNGController.seed_all(randomness_factor_seeds['model_randomness'])
     # DeBERTa-v3 uses SentencePiece: the fast tokenizer conversion drops byte
     # fallback (unknown tokens instead of byte pieces), so use the slow one.
     tokenizer = AutoTokenizer.from_pretrained(
@@ -353,7 +367,8 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
         train_test_indices=train_test_indices
     )
     loader = DatasetLoader(DATASET, BATCH_SIZE, dataset, randomness_factor_seeds['sample_order'])
-    trainloader, valloader = make_train_val_loaders(dataset, BATCH_SIZE, randomness_factor_seeds['sample_order'])
+    trainloader, valloader, early_stopping = make_train_val_loaders(
+        dataset, BATCH_SIZE, randomness_factor_seeds['sample_order'], holdout_val=args.ft_holdout_val == 1)
     testloader  = loader.testloader()
 
     net = FT_MODELS[MODEL](dataset.n_classes, randomness_factor_seeds['model_initialisation'], randomness_factor_seeds['model_randomness'], True)
@@ -414,17 +429,22 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
                 val_golden.extend(targets.tolist())
                 val_predicted.extend(logits.argmax(dim=1).tolist())
         val_loss /= max(1, val_n)
+        val_f1 = f1_score(val_golden, val_predicted, average='macro', zero_division=0)
 
+        if not early_stopping:
+            # Holdout only scores the final model (LR sweep).
+            best_val, best_val_f1 = val_loss, val_f1
+            continue
         if val_loss < best_val - 1e-4:
             best_val = val_loss
-            best_val_f1 = f1_score(val_golden, val_predicted, average='macro', zero_division=0)
+            best_val_f1 = val_f1
             best_state = copy.deepcopy(net.state_dict())
             pat = 0
         else:
             pat += 1
             if pat >= patience:
                 break
-    
+
     if 'best_state' in locals():
         net.load_state_dict(best_state)
     
@@ -444,7 +464,8 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
             _, predicted = torch.max(outputs.data, 1)
             predictions.extend(predicted.tolist())
             golden.extend(targets.tolist())
-    # Best-epoch validation metrics, used to pick the learning rate (run_lr_sweep.py).
+    # Validation metrics of the returned model (best epoch, or the final one
+    # without early stopping), used to pick the learning rate (run_lr_sweep.py).
     val_metrics = {}
     if best_val != float('inf'):
         val_metrics = {'val_loss': float(best_val), 'val_f1_macro': float(best_val_f1)}
@@ -503,6 +524,7 @@ def main():
     parser.add_argument('--rskf_splits', default=10, type=int, help='Number of folds for RepeatedStratifiedKFold (K).')
     parser.add_argument('--rskf_repeats', default=1, type=int, help='Number of repeats for RepeatedStratifiedKFold (R).')
     parser.add_argument('--rskf_seed', default=27, type=int, help='Random state for RepeatedStratifiedKFold.')
+    parser.add_argument('--ft_holdout_val', default=0, type=int, help='Fine-tuning: hold out 10%% for validation even when it is too small for early stopping, only to score the final model (used by run_lr_sweep.py).')
     parser.add_argument('--results_root', default='results', type=str, help='Root directory for results (the LR sweep writes elsewhere so it never mixes with the main grid).')
     parser.add_argument('--sweep', default=None, type=str, help='JSON list of configurations (dataset, num_labelled, configuration_name, rskf_splits) to run in this process with the model loaded once.')
 
@@ -679,7 +701,7 @@ def run_configuration(config):
     )
     print(f'Using seeds: {run_seeds}')
 
-    _, all_targets, _ = load_text_and_targets(DATASET, PROMPT_FORMAT)
+    _, all_targets, all_classes = load_text_and_targets(DATASET, PROMPT_FORMAT)
     all_targets = np.array(all_targets)
     n_samples = len(all_targets)
 
@@ -781,6 +803,9 @@ def run_configuration(config):
             ),
             decoding=DECODING,
             learning_rate=LEARNING_RATE if EXPERIMENT_TYPE in ('finetuning', 'instruction_tuning', 'instruction_tuning_steps') else None,
+            num_labelled_effective=effective_num_labelled(
+                args.num_labelled, len(all_classes),
+                np.bincount(all_targets[train_idx], minlength=len(all_classes))),
         )
       
         # Clean checkpoints  

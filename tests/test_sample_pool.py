@@ -400,6 +400,38 @@ class TestEffectiveNumLabelled(unittest.TestCase):
         self.assertEqual(effective_num_labelled(50, 4), 52)
         self.assertEqual(effective_num_labelled(0, 4), 0)
 
+    def test_a_class_that_runs_out_contributes_only_what_it_has(self):
+        from sample_pool import effective_num_labelled
+        # BoolQ-like: 10000 asks 5000 per class, the minority has 4311
+        self.assertEqual(effective_num_labelled(10000, 2, [4311, 7116]), 9311)
+        self.assertEqual(effective_num_labelled(100, 2, [4311, 7116]), 100)
+
+    def test_matches_the_real_selection(self):
+        from sample_pool import SamplePool, effective_num_labelled
+        texts = tuple(f"t{i}" for i in range(130))
+        targets = tuple([0] * 30 + [1] * 100)
+        train = list(range(130))
+        for n in (10, 50, 100, 120):
+            pool = SamplePool("sst2", (train, []), num_labelled=n, full_test=True, label_seed=3,
+                              texts=texts, targets=targets, classes=("a", "b"))
+            self.assertEqual(len(pool.train_text), effective_num_labelled(n, 2, [30, 100]), n)
+
+
+class TestPermutationIsolation(unittest.TestCase):
+
+    def test_permutation_leaves_global_rngs_untouched(self):
+        import torch
+        from sample_pool import _deterministic_permute
+        cpu = torch.get_rng_state().clone()
+        cuda = torch.cuda.get_rng_state().clone() if torch.cuda.is_available() else None
+        perm = _deterministic_permute(list(range(50)), 999)
+        self.assertTrue(torch.equal(cpu, torch.get_rng_state()))
+        if cuda is not None:
+            self.assertTrue(torch.equal(cuda, torch.cuda.get_rng_state()))
+        # same permutation the global RNG used to give
+        torch.manual_seed(999)
+        self.assertEqual(perm, torch.randperm(50).tolist())
+
 
 if __name__ == "__main__":
     unittest.main()

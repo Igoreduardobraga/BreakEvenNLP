@@ -46,6 +46,9 @@ class TestLrBands(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--rskf_repeats") + 1], "1")
         self.assertEqual(cmd[cmd.index("--results_root") + 1], "results_lr_sweep")
         self.assertEqual(cmd[cmd.index("--configuration_name") + 1], "lr_1e-05_num_samples_100")
+        self.assertEqual(cmd[cmd.index("--ft_holdout_val") + 1], "1")
+        grid = rx.finetuning_experiment("sst2", "roberta", 100, 1e-5)
+        self.assertNotIn("--ft_holdout_val", grid["cmd_args"])
 
 
 class TestSelect(unittest.TestCase):

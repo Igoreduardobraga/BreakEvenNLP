@@ -82,7 +82,9 @@ def get_finetuning_batch_size(n: int) -> int:
 # Learning rate do fine-tuning por modelo e faixa de N, escolhida pela
 # validacao em run_lr_sweep.py. Cada faixa e (nome, maior N da faixa, N usado
 # na varredura). A faixa pequena varre em N=100 porque com N=50 o split de
-# validacao (10%) fica menor que o numero de classes no SNIPS.
+# validacao (10%) fica menor que o numero de classes no SNIPS. Na grade, N<250
+# treina sem early stopping com todo o N; na varredura essa faixa separa 10%
+# so para medir o modelo final (--ft_holdout_val 1).
 FT_LR_FILE = "ft_learning_rates.json"
 FT_LR_BANDS = [("small", 100, 100), ("medium", 1000, 500), ("large", None, 2500)]
 DEFAULT_FT_LR = 1e-5
@@ -104,7 +106,8 @@ def load_ft_learning_rates(path: str = FT_LR_FILE) -> Dict[str, Dict[str, float]
 
 def finetuning_experiment(ds: str, m: str, n: int, lr: float, rskf_repeats: int = 3,
                           configuration_name: Optional[str] = None,
-                          results_root: str = "results") -> Dict[str, Any]:
+                          results_root: str = "results",
+                          holdout_val: bool = False) -> Dict[str, Any]:
     cfg = DATASET_CONFIGS[ds]
     cfg_name = configuration_name or f"num_samples_{n}"
     cmd_args = [
@@ -126,6 +129,8 @@ def finetuning_experiment(ds: str, m: str, n: int, lr: float, rskf_repeats: int 
         "--rskf_seed", "27",
         "--results_root", results_root,
     ]
+    if holdout_val:
+        cmd_args += ["--ft_holdout_val", "1"]
     return {
         "script_origin": "finetuning.sh",
         "experiment_type": "finetuning",

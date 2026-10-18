@@ -3,8 +3,9 @@
 
 Para cada modelo, faixa de N (FT_LR_BANDS em run_experiments.py), dataset e
 LR, roda o repeat 0 do RSKF no N representativo da faixa. A LR escolhida e a
-de menor val_loss (melhor epoch, split de validacao de 10% do treino), pelo
-rank medio entre datasets. O F1 de teste e salvo so para consulta: escolher
+de menor val_loss (10% do treino), pelo rank medio entre datasets. Nas faixas
+com early stopping e o val_loss do melhor epoch; na faixa pequena, que na grade
+treina sem early stopping, e o val_loss do modelo final num holdout de 10%. O F1 de teste e salvo so para consulta: escolher
 por ele daria ao FT uma vantagem otimista sobre os LLMs.
 
 Os resultados vao para --results-root (results_lr_sweep/), separados da grade
@@ -40,7 +41,7 @@ def sweep_experiments(models, datasets, lrs, results_root):
                     exp = finetuning_experiment(
                         ds, m, probe_n, lr, rskf_repeats=1,
                         configuration_name=f"lr_{lr:g}_num_samples_{probe_n}",
-                        results_root=results_root)
+                        results_root=results_root, holdout_val=True)
                     exp["band"] = band
                     exps.append(exp)
     return exps

@@ -53,6 +53,7 @@ SUMMARY_COLUMNS = [
     "quant_format",
     "decoding",
     "learning_rate",
+    "num_labelled_effective",
     "timestamp",
     "git_commit",
 ]
@@ -290,7 +291,7 @@ class ResultStore:
             "rskf_repeat", "rskf_fold", "run_seed_used",
             "data_split_seed", "label_choice_seed", "sample_choice_seed",
             "sample_order_seed", "model_initialisation_seed", "model_randomness_seed",
-            "prompt_format",
+            "prompt_format", "num_labelled_effective",
         }
         float_cols = {"f1_macro", "f1_prompting", "f1_macro_icl", "val_loss", "val_f1_macro",
                       "learning_rate", "duration_seconds",
@@ -353,6 +354,7 @@ class ResultStore:
         quant_format: Optional[str] = None,
         decoding: Optional[str] = None,
         learning_rate: Optional[float] = None,
+        num_labelled_effective: Optional[int] = None,
     ) -> None:
         """Atomically records the outcome of a single fold into summary/prediction tables and legacy JSON."""
         ts = timestamp or datetime.now(timezone.utc).isoformat()
@@ -394,6 +396,7 @@ class ResultStore:
             "quant_format": quant_format or "",
             "decoding": decoding or "free",
             "learning_rate": learning_rate if learning_rate is not None else "",
+            "num_labelled_effective": num_labelled_effective if num_labelled_effective is not None else "",
             "timestamp": ts,
             "git_commit": self._git_commit,
         }

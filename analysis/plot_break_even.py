@@ -29,6 +29,7 @@ import logging
 import math
 import re
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import matplotlib
@@ -39,7 +40,9 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from data import load_text_and_targets  # noqa: E402
 from prompter import PromptFormatter  # noqa: E402
+from run_experiments import DATASET_CONFIGS  # noqa: E402
 from sample_pool import effective_num_labelled  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -157,6 +160,24 @@ def variant_of(engine, decoding) -> str:
     return "@" + "-".join(parts) if parts else ""
 
 
+@lru_cache(maxsize=None)
+def train_fold_class_counts(ds: str):
+    """Amostras por classe num fold de treino (o RSKF estratificado varia +-1)."""
+    try:
+        _, targets, classes = load_text_and_targets(ds, 0)
+    except Exception as e:  # sem rede/cache: cai na formula sem teto
+        log.warning("%s: contagem por classe indisponivel (%s); N efetivo sem teto", ds, e)
+        return None
+    splits = DATASET_CONFIGS.get(ds, {}).get("rskf_splits", 5)
+    counts = np.bincount(np.asarray(targets), minlength=len(classes))
+    return tuple(int(c) for c in counts * (splits - 1) // splits)
+
+
+def estimate_effective_n(n: int, ds: str) -> int:
+    k = len(PromptFormatter.DEFAULT_CLASSES.get(ds, ()))
+    return effective_num_labelled(n, k, train_fold_class_counts(ds))
+
+
 def load_all(results_dir: Path) -> pd.DataFrame:
     frames = []
     for p in sorted(results_dir.rglob("summary.parquet")):
@@ -176,11 +197,18 @@ def load_all(results_dir: Path) -> pd.DataFrame:
     if not frames:
         raise SystemExit(f"nenhum summary.parquet em {results_dir}")
     full = pd.concat(frames, ignore_index=True)
-    # O pool seleciona ceil(N/classes) por classe: o eixo x usa esse N efetivo
-    # (ex.: SNIPS N=10 -> 14). O N nominal fica em n_nominal.
+    # O eixo x usa o N efetivo: o pool seleciona ceil(N/classes) por classe e
+    # uma classe que acaba contribui so com o que tem (ex.: SNIPS N=10 -> 14,
+    # BoolQ N=10000 -> ~9300). Resultados novos gravam o valor real por fold
+    # (num_labelled_effective); os antigos usam a estimativa por classe.
+    # O N nominal fica em n_nominal.
     full["n_nominal"] = full["configuration"].astype(str).str.extract(N_RE)[0].astype(int)
-    full["n"] = [effective_num_labelled(n, len(PromptFormatter.DEFAULT_CLASSES.get(ds, ())))
-                 for n, ds in zip(full["n_nominal"], full["dataset"])]
+    recorded = (pd.to_numeric(full["num_labelled_effective"], errors="coerce")
+                if "num_labelled_effective" in full.columns else pd.Series(np.nan, index=full.index))
+    estimated = [estimate_effective_n(n, ds) for n, ds in zip(full["n_nominal"], full["dataset"])]
+    full["n_effective"] = recorded.fillna(pd.Series(estimated, index=full.index))
+    full["n"] = (full.groupby(["dataset", "exp_dir", "experiment_type", "n_nominal"])["n_effective"]
+                 .transform("mean").round().astype(int))
     full["f1"] = full.apply(metric_for, axis=1)
     full["f1"] = pd.to_numeric(full["f1"], errors="coerce")
     full = full.dropna(subset=["n", "f1"])

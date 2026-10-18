@@ -586,6 +586,15 @@ class TestResultStore(unittest.TestCase):
         self.assertEqual(row["model_randomness_seed"], 0)
         self.assertIn(row["data_split_seed"], ("", None))
 
+    def test_effective_labelled_count_recorded(self):
+        from result_store import ResultStore
+
+        store = ResultStore(results_path=self.test_dir, storage_format="csv", **self.exp_meta)
+        store.record_fold(repeat=0, fold=0, run_seed_used=1, randomness_factor_seeds={},
+                          metrics={"f1_macro": 0.5}, real=[1], predicted=[1],
+                          num_labelled_effective=9311)
+        self.assertEqual(store.load_summary(as_dataframe=False)[0]["num_labelled_effective"], 9311)
+
 
 if __name__ == "__main__":
     unittest.main()
