@@ -37,10 +37,10 @@ dev = [
     "pytest>=8.0.0",
 ]
 
-# NOTE: vLLM is intentionally NOT a dependency group: its torchvision pin
-# conflicts with torch==2.4.1/torchvision==0.19.1. On the 4090 machine install
-# it directly into the venv:
-#   .venv/bin/pip install "vllm>=0.11" vllm-bnb-plugin
+# NOTE: vLLM is intentionally NOT a dependency group: its torch pin conflicts
+# with torch==2.4.1/torchvision==0.19.1. It lives in a separate venv,
+# .venv-vllm, which also carries the newer transformers needed by Qwen3.5 and
+# Gemma 4 (see README).
 
 [tool.uv]                                                                                                                                                                                      
 package = false

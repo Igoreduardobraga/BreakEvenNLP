@@ -1,10 +1,10 @@
 # Investigating the impact of changing the number of labelled training samples on performance and stability/variability of results in fine-tuning, prompting, in-context learning and instruction-tuning approaches
 
+> **Historical.** This document describes the experiments of the original randomness study. Some arguments used below (`--mitigation_runs`, `--investigation_runs`) and the `*process_results.py` scripts no longer exist; folds now come from `--rskf_splits`/`--rskf_repeats`, and results are analysed with `analysis/plot_break_even.py`. See the [README](../README.md) for the current setup and commands.
+
 ## Dependencies and local setup
 
-The code in this repository uses Python. The required dependencies are specified in the `requirements.txt`. 
-
-Simply run `pip install -r requiremets.txt`.
+See the [README](../README.md#setup).
 
 ## Running the investigation
 
