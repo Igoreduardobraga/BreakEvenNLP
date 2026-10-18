@@ -1,5 +1,5 @@
 import unittest
-from evaluator import ModelEvaluator
+from evaluator import ModelEvaluator, _parse_results
 
 
 class DummyEncoded:
@@ -91,6 +91,25 @@ class DummyDataset:
     def batch_data_for_evaluation(self, batch_size=64):
         for i in range(0, len(self.test_text), batch_size):
             yield self.test_text[i:i + batch_size], self.test_targets[i:i + batch_size]
+
+
+class TestParseResults(unittest.TestCase):
+
+    def test_nested_class_names_resolve_to_longest_match(self):
+        classes = ["not entailment", "entailment"]
+        self.assertEqual(_parse_results("not entailment", classes), 0)
+        self.assertEqual(_parse_results("Entailment.", classes), 1)
+
+    def test_two_distinct_answers_stay_ambiguous(self):
+        classes = ["not entailment", "entailment"]
+        self.assertEqual(_parse_results("not entailment, entailment", classes), -1)
+        self.assertEqual(_parse_results("positive or negative", ["negative", "positive"]), -1)
+
+    def test_overlapping_but_not_nested_names(self):
+        classes = ["Playlist", "Rate Book", "Book Restaurant"]
+        self.assertEqual(_parse_results("Rate Book", classes), 1)
+        self.assertEqual(_parse_results("Book Restaurant", classes), 2)
+        self.assertEqual(_parse_results("2", classes), 1)
 
 
 class TestModelEvaluatorSeq2Seq(unittest.TestCase):

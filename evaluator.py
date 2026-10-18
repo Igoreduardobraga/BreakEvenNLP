@@ -28,9 +28,24 @@ def _parse_results(text, classes):
             candidates.add(k)
 
     # Textual response: try to find the name of the class
+    spans = {}
     for idx, cls in enumerate(classes):
         cls_pat = r'\b' + re.escape(str(cls).lower()) + r'\b'
-        if re.search(cls_pat, t):
+        found = [m.span() for m in re.finditer(cls_pat, t)]
+        if found:
+            spans[idx] = found
+
+    # A class whose every match lies inside a longer class's match is not a
+    # separate answer: "not entailment" must not also count as "entailment".
+    def _inside(span, other):
+        return other[0] <= span[0] and span[1] <= other[1] and span != other
+
+    for idx, found in spans.items():
+        nested = all(
+            any(_inside(s, o) for j, other in spans.items() if j != idx for o in other)
+            for s in found
+        )
+        if not nested:
             candidates.add(idx)
 
     # Returns the index found if exactly one unambiguous candidate matched
