@@ -590,7 +590,8 @@ class PromptFormatter:
         messages.append({"role": "user", "content": q_content})
 
         if hasattr(self.tokenizer, "apply_chat_template"):
-            return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            return self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
 
         native_str = f"<|im_start|>system\n{sys_msg}<|im_end|>\n"
         for i in range(1, len(messages) - 1, 2):
