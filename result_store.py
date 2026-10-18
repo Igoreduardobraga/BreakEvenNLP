@@ -12,6 +12,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+def _factor_seed(seeds: Dict[str, Any], factor: str) -> Any:
+    """Seed of a factor under either key spelling; 0 is a valid seed, not missing."""
+    for key in (f"{factor}_seed", factor):
+        if seeds.get(key) is not None:
+            return seeds[key]
+    return ""
+
+
 SUMMARY_COLUMNS = [
     "experiment_name",
     "experiment_type",
@@ -358,12 +366,12 @@ class ResultStore:
             "rskf_repeat": int(repeat),
             "rskf_fold": int(fold),
             "run_seed_used": int(run_seed_used),
-            "data_split_seed": randomness_factor_seeds.get("data_split_seed") or randomness_factor_seeds.get("data_split", ""),
-            "label_choice_seed": randomness_factor_seeds.get("label_choice_seed") or randomness_factor_seeds.get("label_choice", ""),
-            "sample_choice_seed": randomness_factor_seeds.get("sample_choice_seed") or randomness_factor_seeds.get("sample_choice", ""),
-            "sample_order_seed": randomness_factor_seeds.get("sample_order_seed") or randomness_factor_seeds.get("sample_order", ""),
-            "model_initialisation_seed": randomness_factor_seeds.get("model_initialisation_seed") or randomness_factor_seeds.get("model_initialisation", ""),
-            "model_randomness_seed": randomness_factor_seeds.get("model_randomness_seed") or randomness_factor_seeds.get("model_randomness", ""),
+            "data_split_seed": _factor_seed(randomness_factor_seeds, "data_split"),
+            "label_choice_seed": _factor_seed(randomness_factor_seeds, "label_choice"),
+            "sample_choice_seed": _factor_seed(randomness_factor_seeds, "sample_choice"),
+            "sample_order_seed": _factor_seed(randomness_factor_seeds, "sample_order"),
+            "model_initialisation_seed": _factor_seed(randomness_factor_seeds, "model_initialisation"),
+            "model_randomness_seed": _factor_seed(randomness_factor_seeds, "model_randomness"),
             "f1_macro": metrics.get("f1_macro", ""),
             "f1_prompting": metrics.get("f1_prompting", ""),
             "f1_macro_icl": metrics.get("f1_macro_icl", ""),

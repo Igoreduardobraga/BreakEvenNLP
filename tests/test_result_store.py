@@ -571,6 +571,21 @@ class TestResultStore(unittest.TestCase):
         self.assertEqual(row["label_choice_seed"], 666)
         self.assertEqual(row["model_randomness_seed"], 111)
 
+    def test_zero_seed_is_recorded_not_blank(self):
+        from result_store import ResultStore
+
+        store = ResultStore(results_path=self.test_dir, storage_format="csv", **self.exp_meta)
+        store.record_fold(
+            repeat=0, fold=0, run_seed_used=0,
+            randomness_factor_seeds={"label_choice": 0, "model_randomness_seed": 0},
+            metrics={"f1_macro": 0.9},
+            real=[1], predicted=[1],
+        )
+        row = store.load_summary(as_dataframe=False)[0]
+        self.assertEqual(row["label_choice_seed"], 0)
+        self.assertEqual(row["model_randomness_seed"], 0)
+        self.assertIn(row["data_split_seed"], ("", None))
+
 
 if __name__ == "__main__":
     unittest.main()
