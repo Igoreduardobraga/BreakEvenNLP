@@ -13,6 +13,7 @@ import re
 import random
 import pickle
 import argparse
+import atexit
 import torch
 import numpy as np
 import os
@@ -126,16 +127,9 @@ def prompt_icl_experiment(randomness_factor_seeds, model, tokenizer, experiment=
     partial_path = os.path.join(investigation_path, 'partial') if investigation_path else None
 
     if ENGINE == 'vllm':
-        evaluator = ModelEvaluator(
-            model=model_name,
-            tokenizer=None,
-            model_name=MODEL,
-            batch_size=BATCH_SIZE,
-            prompt_format=PROMPT_FORMAT,
-            max_new_tokens=10,
-            engine='vllm',
-            seed=randomness_factor_seeds['model_randomness'],
-        )
+        # Engine built once in main(); the fold's seed goes per request.
+        return vllm_evaluator.evaluate(dataset, mode=mode, decoding=DECODING,
+                                       seed=randomness_factor_seeds['model_randomness'])
     else:
         evaluator = ModelEvaluator(
             model=model,
@@ -470,7 +464,7 @@ def main():
     global args, device, MODEL, MODEL_SIZE, FACTOR, DATASET, \
         EXPERIMENT_TYPE, FULL_TEST, MAX_LEN, PROMPT_FORMAT, BATCH_SIZE, \
         NUM_EPOCHS, LEARNING_RATE, ENGINE, DECODING, RESULTS_PATH, \
-        model, tokenizer, model_name
+        model, tokenizer, model_name, vllm_evaluator
     parser = argparse.ArgumentParser()
     # Meta
     parser.add_argument('--experiment_name', default='investigation_experiments', type=str, help='Directory to save experiments to')
@@ -553,6 +547,18 @@ def main():
                 parser.error(f"--engine vllm supports causal families only, not '{MODEL}'")
             model = None
             tokenizer = None
+            # Load once, outside the timed folds (like the HF models below):
+            # rebuilding per fold reloads the weights and can leak VRAM.
+            vllm_evaluator = ModelEvaluator(
+                model=model_name,
+                tokenizer=None,
+                model_name=MODEL,
+                batch_size=BATCH_SIZE,
+                prompt_format=PROMPT_FORMAT,
+                max_new_tokens=10,
+                engine='vllm',
+            )
+            atexit.register(vllm_evaluator.close)
 
         elif MODEL == 'llama2':
             access_token = os.environ['HUGGINGFACE_TOKEN']

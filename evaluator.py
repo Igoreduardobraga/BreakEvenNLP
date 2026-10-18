@@ -395,7 +395,7 @@ class _VLLMAdapter:
         except Exception:
             pass
 
-    def _build_sampling_params(self, dataset, decoding: str):
+    def _build_sampling_params(self, dataset, decoding: str, seed=None):
         """Builds SamplingParams honouring guided decoding across vLLM versions.
 
         vLLM >= 0.10 removed the `guided_choice` SamplingParams kwarg in favour
@@ -406,7 +406,7 @@ class _VLLMAdapter:
         common = dict(
             temperature=0.0,
             max_tokens=self.max_new_tokens,
-            seed=self.seed,
+            seed=self.seed if seed is None else seed,
         )
         if decoding != 'guided':
             return SamplingParams(**common)
@@ -419,7 +419,7 @@ class _VLLMAdapter:
             **common,
         )
 
-    def evaluate(self, dataset, mode='prompting', decoding='free'):
+    def evaluate(self, dataset, mode='prompting', decoding='free', seed=None):
         if decoding not in ('free', 'guided'):
             raise ValueError(f"Unknown decoding '{decoding}'. Use 'free' or 'guided'.")
         shots = getattr(dataset, 'context_samples', None) if mode == 'icl' else None
@@ -431,7 +431,7 @@ class _VLLMAdapter:
             test_texts.extend(data)
             test_labels.extend(labels)
 
-        params = self._build_sampling_params(dataset, decoding)
+        params = self._build_sampling_params(dataset, decoding, seed=seed)
         prompts = [
             self._to_string(self.prompter.format(
                 sample, dataset_name=dataset_name, classes=dataset.classes,
@@ -447,6 +447,13 @@ class _VLLMAdapter:
             predicted.append(_parse_results(decoded, dataset.classes))
             golden.append(label)
         return EvaluationResult(golden, predicted, decodeds, prompts=prompts, inputs=test_texts)
+
+    def close(self):
+        """Shuts the engine core down explicitly; left to interpreter
+        finalization, a long-lived engine hangs the process at exit."""
+        engine = getattr(getattr(self.llm, 'llm_engine', None), 'engine_core', None)
+        if engine is not None and hasattr(engine, 'shutdown'):
+            engine.shutdown()
 
     @staticmethod
     def _to_string(formatted):
@@ -501,6 +508,11 @@ class ModelEvaluator:
         if 'chatgpt' in self.model_name:
             return 'api'
         return 'bnb-4bit-nf4'
+
+    def close(self):
+        """Releases engine resources (vLLM only; no-op for the other adapters)."""
+        if hasattr(self.adapter, 'close'):
+            self.adapter.close()
 
     def _resolve_adapter(self):
         if self.engine == 'vllm':
@@ -563,7 +575,8 @@ class ModelEvaluator:
     def _causal_family(self):
         return self._causal_family_for(self.model_name)
 
-    def evaluate(self, dataset, mode: str = 'prompting', partial_save_path=None, decoding: str = 'free'):
+    def evaluate(self, dataset, mode: str = 'prompting', partial_save_path=None, decoding: str = 'free',
+                 seed=None):
         """Evaluates the model on the provided dataset.
 
         Args:
@@ -571,6 +584,7 @@ class ModelEvaluator:
             mode: Operating mode ('prompting' for zero-shot, 'icl' for in-context learning).
             partial_save_path: Optional path to save and resume partial results (for API models).
             decoding: 'free' (unconstrained) or 'guided' (vLLM guided_choice only).
+            seed: Per-call sampling seed (vLLM only), so one engine can serve many folds.
 
         Returns:
             Tuple of (golden_labels, predicted_labels, decoded_texts).
@@ -585,5 +599,5 @@ class ModelEvaluator:
         if isinstance(self.adapter, _APIAdapter):
             return self.adapter.evaluate(dataset, mode=mode, partial_save_path=partial_save_path)
         if isinstance(self.adapter, _VLLMAdapter):
-            return self.adapter.evaluate(dataset, mode=mode, decoding=decoding)
+            return self.adapter.evaluate(dataset, mode=mode, decoding=decoding, seed=seed)
         return self.adapter.evaluate(dataset, mode=mode)

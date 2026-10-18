@@ -15,6 +15,14 @@ class FakeRequestOutput:
         self.outputs = [FakeOutput(text)]
 
 
+class FakeEngineCore:
+    def __init__(self):
+        self.shutdowns = 0
+
+    def shutdown(self, timeout=None):
+        self.shutdowns += 1
+
+
 class FakeLLM:
     last_instance = None
 
@@ -27,6 +35,8 @@ class FakeLLM:
         self.canned = ["positive", "negative"]
         self.calls = []
         FakeLLM.last_instance = self
+
+        self.llm_engine = types.SimpleNamespace(engine_core=FakeEngineCore())
 
     def get_tokenizer(self):
         raise RuntimeError("no tokenizer in stub")
@@ -114,6 +124,21 @@ class TestVLLMAdapter(unittest.TestCase):
         self.assertIn("structured_outputs", params.extra)
         self.assertEqual(params.extra["structured_outputs"].choice, ["negative", "positive"])
         self.assertNotIn("guided_choice", params.extra)
+
+    def test_one_engine_serves_folds_with_per_call_seed(self):
+        from evaluator import ModelEvaluator
+        ev = ModelEvaluator(model="x", tokenizer=None, model_name="phi_mini", engine="vllm", seed=0)
+        engine = FakeLLM.last_instance
+        for fold_seed in (11, 22):
+            ev.evaluate(DummyDataset(), mode="prompting", seed=fold_seed)
+        self.assertIs(FakeLLM.last_instance, engine)
+        self.assertEqual([params.seed for _, params in engine.calls], [11, 22])
+
+    def test_close_shuts_engine_core_down(self):
+        from evaluator import ModelEvaluator
+        ev = ModelEvaluator(model="x", tokenizer=None, model_name="phi_mini", engine="vllm")
+        ev.close()
+        self.assertEqual(FakeLLM.last_instance.llm_engine.engine_core.shutdowns, 1)
 
     def test_guided_on_hf_raises(self):
         from evaluator import ModelEvaluator
