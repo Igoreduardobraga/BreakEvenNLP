@@ -2,8 +2,9 @@
 """
 run_experiments.py
 Orquestrador Python de experimentos para o BreakEvenNLP.
-Reproduz com 100% de fidelidade todas as execuções e hiperparâmetros
-definidos nos scripts originais de 'run_experiments/', com suporte a:
+Reproduz as execuções e hiperparâmetros dos scripts originais de
+'legacy/run_experiments/', exceto o conjunto de teste, que agora é comum
+a todas as abordagens (TEST_SET_ARGS). Suporta:
 - Seleção granular por script, dataset ou modelo
 - Dry-run para visualização prévia dos comandos
 - Gestão de logs em arquivo por execução
@@ -17,6 +18,14 @@ import argparse
 import subprocess
 import time
 from typing import List, Dict, Any, Optional
+
+from result_store import experiment_dir_name
+
+# Conjunto de teste comum a todas as abordagens: subconjunto estratificado
+# de 1000 amostras do fold, escolhido pela seed label_choice. Para o mesmo
+# fold e seed, FT, IT, prompting e ICL avaliam exatamente as mesmas amostras.
+# (Os .sh em legacy/ avaliavam FT/IT no fold inteiro.)
+TEST_SET_ARGS = ["--full_test", "0", "--num_labelled_test", "1000"]
 
 DATASET_CONFIGS = {
     "sst2": {
@@ -84,7 +93,7 @@ def generate_finetuning_commands() -> List[Dict[str, Any]]:
                     "--dataset", ds,
                     "--model", m,
                     "--num_labelled", str(n),
-                    "--full_test", "1",
+                    *TEST_SET_ARGS,
                     "--batch_size", str(batch_size),
                     "--num_epochs", "10",
                     "--lr", "1e-5",
@@ -128,8 +137,7 @@ def generate_icl_commands() -> List[Dict[str, Any]]:
                     "--dataset", ds,
                     "--model", m,
                     "--num_labelled", str(n),
-                    "--full_test", "0",
-                    "--num_labelled_test", "1000",
+                    *TEST_SET_ARGS,
                     "--num_shots", "2",
                     "--batch_size", "2",
                     "--factor", "golden_model",
@@ -171,8 +179,7 @@ def generate_icl_llama3_commands() -> List[Dict[str, Any]]:
                 "--model", model,
                 "--model_size", "8b",
                 "--num_labelled", str(n),
-                "--full_test", "0",
-                "--num_labelled_test", "1000",
+                *TEST_SET_ARGS,
                 "--num_shots", "5",
                 "--batch_size", "2",
                 "--factor", "golden_model",
@@ -213,7 +220,7 @@ def generate_it_flan_t5_commands() -> List[Dict[str, Any]]:
                 "--dataset", ds,
                 "--model", model,
                 "--num_labelled", str(n),
-                "--full_test", "1",
+                *TEST_SET_ARGS,
                 "--batch_size", "4",
                 "--num_epochs", "5",
                 "--lr", "1e-5",
@@ -257,7 +264,7 @@ def generate_it_mistral_zephyr_commands() -> List[Dict[str, Any]]:
                     "--dataset", ds,
                     "--model", m,
                     "--num_labelled", str(n),
-                    "--num_labelled_test", "2000",
+                    *TEST_SET_ARGS,
                     "--batch_size", "4",
                     "--num_epochs", "5",
                     "--lr", "1e-5",
@@ -300,9 +307,9 @@ def generate_prompting_commands() -> List[Dict[str, Any]]:
                 "--factor", "golden_model",
                 "--dataset", ds,
                 "--model", m,
-                "--full_test", "0",
+                *TEST_SET_ARGS,
                 "--num_labelled", "1000",
-                "--num_labelled_test", "1000",
+
                 "--batch_size", "8",
                 "--prompt_format", "0",
                 "--rskf_splits", str(cfg["rskf_splits"]),
@@ -342,9 +349,9 @@ def generate_prompting_llama3_commands() -> List[Dict[str, Any]]:
             "--dataset", ds,
             "--model", model,
             "--model_size", "8b",
-            "--full_test", "0",
+            *TEST_SET_ARGS,
             "--num_labelled", "1000",
-            "--num_labelled_test", "1000",
+
             "--batch_size", "8",
             "--prompt_format", "0",
             "--rskf_splits", str(cfg["rskf_splits"]),
@@ -391,8 +398,7 @@ def generate_icl_modern_commands() -> List[Dict[str, Any]]:
                     "--model", m,
                     "--model_size", m_size,
                     "--num_labelled", str(n),
-                    "--full_test", "0",
-                    "--num_labelled_test", "1000",
+                    *TEST_SET_ARGS,
                     "--num_shots", "2",
                     "--batch_size", "2",
                     "--factor", "golden_model",
@@ -439,9 +445,9 @@ def generate_prompting_modern_commands() -> List[Dict[str, Any]]:
                 "--dataset", ds,
                 "--model", m,
                 "--model_size", m_size,
-                "--full_test", "0",
+                *TEST_SET_ARGS,
                 "--num_labelled", "1000",
-                "--num_labelled_test", "1000",
+
                 "--batch_size", "8",
                 "--prompt_format", "0",
                 "--rskf_splits", str(cfg["rskf_splits"]),
@@ -488,7 +494,7 @@ def generate_it_modern_commands() -> List[Dict[str, Any]]:
                     "--model", m,
                     "--model_size", m_size,
                     "--num_labelled", str(n),
-                    "--num_labelled_test", "2000",
+                    *TEST_SET_ARGS,
                     "--batch_size", "4",
                     "--num_epochs", "5",
                     "--lr", "1e-5",
@@ -538,7 +544,9 @@ def is_already_completed(exp: Dict[str, Any]) -> bool:
     dataset = exp["dataset"]
     factor = "golden_model"
 
-    target_dir = os.path.join("results", exp_name, f"{exp_type}_{model}_{model_size}", cfg_name, dataset, factor)
+    exp_dir = experiment_dir_name(exp_type, model, model_size,
+                                  exp.get("engine", "hf"), exp.get("decoding", "free"))
+    target_dir = os.path.join("results", exp_name, exp_dir, cfg_name, dataset, factor)
     if not os.path.isdir(target_dir):
         return False
 
@@ -595,7 +603,7 @@ def run_experiment(exp: Dict[str, Any], gpu_id: Optional[str] = None, logs_dir: 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Orquestrador Python de experimentos para o BreakEvenNLP (100% fiel aos comandos originais)."
+        description="Orquestrador Python de experimentos para o BreakEvenNLP."
     )
     parser.add_argument(
         "--script",
@@ -708,7 +716,7 @@ def main():
             cmd_line = " ".join(exp["cmd_args"])
             print(f"{idx:3d}. {status_tag} ({exp['script_origin']}) {exp['model']} | {exp['dataset']} | N={exp['num_labelled']}")
             print(f"     Comando: {cmd_line}\n")
-        print(f"Total: {total_found} comandos mapeados com 100% de fidelidade aos scripts originais.")
+        print(f"Total: {total_found} comandos mapeados.")
         return
 
     # 4. Execução real
