@@ -194,7 +194,7 @@ class TestPromptFormatterInstructionTuning(unittest.TestCase):
         "llama2": "</s>",
         "qwen": "<|im_end|>",
         "phi": "<|end|>",
-        "gemma": "<end_of_turn>",
+        "gemma": "<turn|>",
     }
 
     def setUp(self):
@@ -261,8 +261,35 @@ class TestModernModelPrompting(unittest.TestCase):
 
         # Zero-shot
         prompt = prompter.format("Terrible plot.", dataset_name="sst2")
-        self.assertIn("<start_of_turn>user", prompt)
-        self.assertIn("<start_of_turn>model", prompt)
+        self.assertIn("<|turn>user", prompt)
+        self.assertIn("<|turn>model", prompt)
+
+
+class TestDuplicateBos(unittest.TestCase):
+
+    class _Tok:
+        bos_token, bos_token_id = "<s>", 1
+
+        def __init__(self, adds_bos):
+            self.adds_bos = adds_bos
+
+        def __call__(self, text):
+            return {"input_ids": ([1] if self.adds_bos else []) + [42]}
+
+        def apply_chat_template(self, messages, **kwargs):
+            return "<s>[INST] " + messages[-1]["content"] + " [/INST]"
+
+    def test_template_bos_dropped_when_tokenizer_adds_one(self):
+        for family in ("mistral", "llama2"):
+            prompt = PromptFormatter(model_name=family, tokenizer=self._Tok(adds_bos=True)).format(
+                "Nice.", dataset_name="sst2")
+            self.assertFalse(prompt.startswith("<s>"), family)
+            self.assertTrue(prompt.startswith("[INST]"), family)
+
+    def test_template_bos_kept_when_tokenizer_does_not_add_one(self):
+        prompt = PromptFormatter(model_name="mistral", tokenizer=self._Tok(adds_bos=False)).format(
+            "Nice.", dataset_name="sst2")
+        self.assertTrue(prompt.startswith("<s>"))
 
 
 if __name__ == "__main__":

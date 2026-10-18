@@ -163,26 +163,40 @@ class PromptFormatter:
         info = self.get_task_info(dataset_name, classes=classes, custom_instruction=custom_instruction)
         sample_str = text.strip()
 
-        if self.model_family == "seq2seq":
-            return self._format_seq2seq(sample_str, info, shots)
-        elif self.model_family == "qwen":
-            return self._format_qwen(sample_str, info, shots)
-        elif self.model_family == "phi":
-            return self._format_phi(sample_str, info, shots)
-        elif self.model_family == "gemma":
-            return self._format_gemma(sample_str, info, shots)
-        elif self.model_family == "llama2":
-            return self._format_llama2(sample_str, info, shots)
-        elif self.model_family == "mistral":
-            return self._format_mistral(sample_str, info, shots)
-        elif self.model_family == "zephyr":
-            return self._format_zephyr(sample_str, info, shots)
-        elif self.model_family == "llama3":
-            return self._format_llama3(sample_str, info, shots)
-        elif self.model_family == "chatgpt":
-            return self._format_chatgpt(sample_str, info, shots)
+        formatters = {
+            "qwen": self._format_qwen,
+            "phi": self._format_phi,
+            "gemma": self._format_gemma,
+            "llama2": self._format_llama2,
+            "mistral": self._format_mistral,
+            "zephyr": self._format_zephyr,
+            "llama3": self._format_llama3,
+            "chatgpt": self._format_chatgpt,
+        }
+        prompt = formatters.get(self.model_family, self._format_seq2seq)(sample_str, info, shots)
+        return self._drop_duplicate_bos(prompt)
 
-        return self._format_seq2seq(sample_str, info, shots)
+    def _drop_duplicate_bos(self, prompt: Any) -> Any:
+        """Removes the BOS the chat template wrote when the tokenizer adds its own.
+
+        Every consumer (HF evaluator, vLLM, IT training) tokenizes the prompt
+        string with special tokens on, so a template-written BOS would be doubled.
+        """
+        bos = getattr(self.tokenizer, "bos_token", None)
+        if not isinstance(prompt, str) or not isinstance(bos, str) or not prompt.startswith(bos):
+            return prompt
+        return prompt[len(bos):] if self._tokenizer_adds_bos() else prompt
+
+    def _tokenizer_adds_bos(self) -> bool:
+        tok = self.tokenizer
+        if getattr(self, "_adds_bos_for", None) is not tok:
+            try:
+                ids = tok("a")["input_ids"]
+                self._adds_bos = bool(ids) and ids[0] == tok.bos_token_id
+            except Exception:
+                self._adds_bos = False
+            self._adds_bos_for = tok
+        return self._adds_bos
 
     def format_batch(
         self,
@@ -206,7 +220,7 @@ class PromptFormatter:
     END_OF_TURN = {
         "qwen": "<|im_end|>",
         "phi": "<|end|>",
-        "gemma": "<end_of_turn>",
+        "gemma": "<turn|>",
         "llama3": "<|eot_id|>",
         "mistral": "</s>",
         "zephyr": "</s>",
@@ -553,8 +567,9 @@ class PromptFormatter:
         if hasattr(self.tokenizer, "apply_chat_template"):
             return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-        native_str = ""
+        # Gemma 4 turn format, matching the -it tokenizer's chat template.
+        native_str = "<bos>"
         for i in range(0, len(messages) - 1, 2):
-            native_str += f"<start_of_turn>user\n{messages[i]['content']}<end_of_turn>\n<start_of_turn>model\n{messages[i+1]['content']}<end_of_turn>\n"
-        native_str += f"<start_of_turn>user\n{messages[-1]['content']}<end_of_turn>\n<start_of_turn>model\n"
+            native_str += f"<|turn>user\n{messages[i]['content']}<turn|>\n<|turn>model\n{messages[i+1]['content']}<turn|>\n"
+        native_str += f"<|turn>user\n{messages[-1]['content']}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
         return native_str

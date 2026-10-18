@@ -458,7 +458,7 @@ ICL_MODELS = {
     'qwen_4b': 'Qwen/Qwen3.5-4B',
     'qwen_9b': 'Qwen/Qwen3.5-9B',
     'phi_mini': 'microsoft/Phi-4-mini-instruct',
-    'gemma_26b': 'google/gemma-4-26B-A4B',
+    'gemma_26b': 'google/gemma-4-26B-A4B-it',
 }
 
 

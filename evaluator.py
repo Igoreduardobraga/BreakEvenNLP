@@ -162,9 +162,10 @@ class _CausalLMAdapter:
             else:
                 terminators.append(self.tokenizer.eos_token_id)
         if hasattr(self.tokenizer, 'convert_tokens_to_ids'):
-            for t_token in ("<|eot_id|>", "<|im_end|>", "<|end|>", "<end_of_turn>"):
+            unk_id = getattr(self.tokenizer, 'unk_token_id', None)
+            for t_token in ("<|eot_id|>", "<|im_end|>", "<|end|>", "<end_of_turn>", "<turn|>"):
                 tid = self.tokenizer.convert_tokens_to_ids(t_token)
-                if tid is not None and not isinstance(tid, str) and tid not in terminators:
+                if tid is not None and not isinstance(tid, str) and tid != unk_id and tid not in terminators:
                     terminators.append(tid)
 
         shots = getattr(dataset, 'context_samples', None) if mode == 'icl' else None
