@@ -401,6 +401,7 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
         net.eval()
         val_loss = 0.0
         val_n = 0
+        val_golden, val_predicted = [], []
         with torch.no_grad():
             for data in valloader:
                 ids = data['ids'].to(device, dtype=torch.long)
@@ -410,10 +411,13 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
                 logits = net(ids, mask, token_type_ids)
                 val_loss += loss_fn(logits, targets).item() * targets.size(0)
                 val_n += targets.size(0)
+                val_golden.extend(targets.tolist())
+                val_predicted.extend(logits.argmax(dim=1).tolist())
         val_loss /= max(1, val_n)
 
         if val_loss < best_val - 1e-4:
             best_val = val_loss
+            best_val_f1 = f1_score(val_golden, val_predicted, average='macro', zero_division=0)
             best_state = copy.deepcopy(net.state_dict())
             pat = 0
         else:
@@ -440,7 +444,11 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
             _, predicted = torch.max(outputs.data, 1)
             predictions.extend(predicted.tolist())
             golden.extend(targets.tolist())
-    return golden, predictions
+    # Best-epoch validation metrics, used to pick the learning rate (run_lr_sweep.py).
+    val_metrics = {}
+    if best_val != float('inf'):
+        val_metrics = {'val_loss': float(best_val), 'val_f1_macro': float(best_val_f1)}
+    return golden, predictions, val_metrics
 
 
 FT_MODELS = {
@@ -495,6 +503,7 @@ def main():
     parser.add_argument('--rskf_splits', default=10, type=int, help='Number of folds for RepeatedStratifiedKFold (K).')
     parser.add_argument('--rskf_repeats', default=1, type=int, help='Number of repeats for RepeatedStratifiedKFold (R).')
     parser.add_argument('--rskf_seed', default=27, type=int, help='Random state for RepeatedStratifiedKFold.')
+    parser.add_argument('--results_root', default='results', type=str, help='Root directory for results (the LR sweep writes elsewhere so it never mixes with the main grid).')
     parser.add_argument('--sweep', default=None, type=str, help='JSON list of configurations (dataset, num_labelled, configuration_name, rskf_splits) to run in this process with the model loaded once.')
 
     parser.add_argument('-f')
@@ -644,7 +653,7 @@ def run_configuration(config):
     for key, value in config.items():
         setattr(args, key, value)
     DATASET = args.dataset
-    RESULTS_PATH = os.path.join('results', f'{args.experiment_name}', experiment_dir_name(EXPERIMENT_TYPE, MODEL, MODEL_SIZE, ENGINE, DECODING), args.configuration_name, DATASET, FACTOR)
+    RESULTS_PATH = os.path.join(args.results_root, f'{args.experiment_name}', experiment_dir_name(EXPERIMENT_TYPE, MODEL, MODEL_SIZE, ENGINE, DECODING), args.configuration_name, DATASET, FACTOR)
     if not os.path.exists(RESULTS_PATH):
         os.makedirs(RESULTS_PATH)
     print(f'=== Configuration {args.configuration_name} | dataset={DATASET} | num_labelled={args.num_labelled} ===')
@@ -711,12 +720,12 @@ def run_configuration(config):
 
         if EXPERIMENT_TYPE in ['finetuning']:
             print('Running fine-tuning experiments!')
-            golden, predicted = ft_experiment(randomness_factor_seeds, train_test_indices=(train_idx, test_idx))
+            golden, predicted, val_metrics = ft_experiment(randomness_factor_seeds, train_test_indices=(train_idx, test_idx))
             decodeds = None
             prompts = None
             inputs = None
             f1_macro = compute_macro_f1(golden, predicted, failed_label=-1)
-            metrics = {'f1_macro': float(f1_macro)}
+            metrics = {'f1_macro': float(f1_macro), **val_metrics}
         elif EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
             eval_res = instruction_tuning_experiment(
                 randomness_factor_seeds, model_name, tokenizer, fold_path, train_test_indices=(train_idx, test_idx)
@@ -771,6 +780,7 @@ def run_configuration(config):
                       else ('api' if MODEL == 'chatgpt' else 'bnb-4bit-nf4'))
             ),
             decoding=DECODING,
+            learning_rate=LEARNING_RATE if EXPERIMENT_TYPE in ('finetuning', 'instruction_tuning', 'instruction_tuning_steps') else None,
         )
       
         # Clean checkpoints  

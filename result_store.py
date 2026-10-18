@@ -39,6 +39,8 @@ SUMMARY_COLUMNS = [
     "f1_macro",
     "f1_prompting",
     "f1_macro_icl",
+    "val_loss",
+    "val_f1_macro",
     "duration_seconds",
     "energy_kwh",
     "co2_kg",
@@ -50,6 +52,7 @@ SUMMARY_COLUMNS = [
     "engine",
     "quant_format",
     "decoding",
+    "learning_rate",
     "timestamp",
     "git_commit",
 ]
@@ -289,7 +292,8 @@ class ResultStore:
             "sample_order_seed", "model_initialisation_seed", "model_randomness_seed",
             "prompt_format",
         }
-        float_cols = {"f1_macro", "f1_prompting", "f1_macro_icl", "duration_seconds",
+        float_cols = {"f1_macro", "f1_prompting", "f1_macro_icl", "val_loss", "val_f1_macro",
+                      "learning_rate", "duration_seconds",
                       "energy_kwh", "co2_kg", "carbon_intensity",
                       "gpu_energy_kwh", "cpu_energy_kwh"}
 
@@ -348,6 +352,7 @@ class ResultStore:
         engine: Optional[str] = None,
         quant_format: Optional[str] = None,
         decoding: Optional[str] = None,
+        learning_rate: Optional[float] = None,
     ) -> None:
         """Atomically records the outcome of a single fold into summary/prediction tables and legacy JSON."""
         ts = timestamp or datetime.now(timezone.utc).isoformat()
@@ -375,6 +380,8 @@ class ResultStore:
             "f1_macro": metrics.get("f1_macro", ""),
             "f1_prompting": metrics.get("f1_prompting", ""),
             "f1_macro_icl": metrics.get("f1_macro_icl", ""),
+            "val_loss": metrics.get("val_loss", ""),
+            "val_f1_macro": metrics.get("val_f1_macro", ""),
             "duration_seconds": round(duration_seconds, 4) if duration_seconds is not None else "",
             "energy_kwh": energy_kwh if energy_kwh is not None else "",
             "co2_kg": co2_kg if co2_kg is not None else "",
@@ -386,6 +393,7 @@ class ResultStore:
             "engine": engine or "hf",
             "quant_format": quant_format or "",
             "decoding": decoding or "free",
+            "learning_rate": learning_rate if learning_rate is not None else "",
             "timestamp": ts,
             "git_commit": self._git_commit,
         }

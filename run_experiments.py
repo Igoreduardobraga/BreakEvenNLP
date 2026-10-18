@@ -79,48 +79,88 @@ def get_finetuning_batch_size(n: int) -> int:
         return 32
 
 
+# Learning rate do fine-tuning por modelo e faixa de N, escolhida pela
+# validacao em run_lr_sweep.py. Cada faixa e (nome, maior N da faixa, N usado
+# na varredura). A faixa pequena varre em N=100 porque com N=50 o split de
+# validacao (10%) fica menor que o numero de classes no SNIPS.
+FT_LR_FILE = "ft_learning_rates.json"
+FT_LR_BANDS = [("small", 100, 100), ("medium", 1000, 500), ("large", None, 2500)]
+DEFAULT_FT_LR = 1e-5
+
+
+def ft_lr_band(n: int) -> str:
+    for name, max_n, _ in FT_LR_BANDS:
+        if max_n is None or n <= max_n:
+            return name
+    raise ValueError(n)
+
+
+def load_ft_learning_rates(path: str = FT_LR_FILE) -> Dict[str, Dict[str, float]]:
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        return json.load(f)["learning_rates"]
+
+
+def finetuning_experiment(ds: str, m: str, n: int, lr: float, rskf_repeats: int = 3,
+                          configuration_name: Optional[str] = None,
+                          results_root: str = "results") -> Dict[str, Any]:
+    cfg = DATASET_CONFIGS[ds]
+    cfg_name = configuration_name or f"num_samples_{n}"
+    cmd_args = [
+        sys.executable, "main.py",
+        "--experiment_name", "finetuning",
+        "--configuration_name", cfg_name,
+        "--experiment_type", "finetuning",
+        "--dataset", ds,
+        "--model", m,
+        "--num_labelled", str(n),
+        *TEST_SET_ARGS,
+        "--batch_size", str(get_finetuning_batch_size(n)),
+        "--num_epochs", "10",
+        "--lr", f"{lr:g}",
+        "--max_len", "128",
+        "--factor", "golden_model",
+        "--rskf_splits", str(cfg["rskf_splits"]),
+        "--rskf_repeats", str(rskf_repeats),
+        "--rskf_seed", "27",
+        "--results_root", results_root,
+    ]
+    return {
+        "script_origin": "finetuning.sh",
+        "experiment_type": "finetuning",
+        "experiment_name": "finetuning",
+        "dataset": ds,
+        "model": m,
+        "model_size": "base",
+        "num_labelled": n,
+        "lr": lr,
+        "configuration_name": cfg_name,
+        "rskf_splits": cfg["rskf_splits"],
+        "rskf_repeats": rskf_repeats,
+        "results_root": results_root,
+        "cmd_args": cmd_args,
+    }
+
+
 def generate_finetuning_commands() -> List[Dict[str, Any]]:
-    """Gera comandos exatamente como definidos em run_experiments/finetuning.sh"""
-    commands = []
+    """Grade de fine-tuning com a LR escolhida por modelo e faixa de N."""
     datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
     models = ["bert", "roberta", "deberta"]
-
+    chosen = load_ft_learning_rates()
+    commands = []
+    missing = set()
     for ds in datasets:
-        cfg = DATASET_CONFIGS[ds]
         for m in models:
-            for n in cfg["sizes"]:
-                batch_size = get_finetuning_batch_size(n)
-                cmd_args = [
-                    sys.executable, "main.py",
-                    "--experiment_name", "finetuning",
-                    "--configuration_name", f"num_samples_{n}",
-                    "--experiment_type", "finetuning",
-                    "--dataset", ds,
-                    "--model", m,
-                    "--num_labelled", str(n),
-                    *TEST_SET_ARGS,
-                    "--batch_size", str(batch_size),
-                    "--num_epochs", "10",
-                    "--lr", "1e-5",
-                    "--max_len", "128",
-                    "--factor", "golden_model",
-                    "--rskf_splits", str(cfg["rskf_splits"]),
-                    "--rskf_repeats", "3",
-                    "--rskf_seed", "27"
-                ]
-                commands.append({
-                    "script_origin": "finetuning.sh",
-                    "experiment_type": "finetuning",
-                    "experiment_name": "finetuning",
-                    "dataset": ds,
-                    "model": m,
-                    "model_size": "base",
-                    "num_labelled": n,
-                    "configuration_name": f"num_samples_{n}",
-                    "rskf_splits": cfg["rskf_splits"],
-                    "rskf_repeats": 3,
-                    "cmd_args": cmd_args,
-                })
+            for n in DATASET_CONFIGS[ds]["sizes"]:
+                lr = chosen.get(m, {}).get(ft_lr_band(n))
+                if lr is None:
+                    missing.add(f"{m}/{ft_lr_band(n)}")
+                    lr = DEFAULT_FT_LR
+                commands.append(finetuning_experiment(ds, m, n, lr))
+    if missing:
+        print(f" AVISO: sem LR escolhida em {FT_LR_FILE} para {', '.join(sorted(missing))}; "
+              f"usando {DEFAULT_FT_LR:g} (rode run_lr_sweep.py antes).")
     return commands
 
 
@@ -551,7 +591,7 @@ def is_already_completed(exp: Dict[str, Any]) -> bool:
 
     exp_dir = experiment_dir_name(exp_type, model, model_size,
                                   exp.get("engine", "hf"), exp.get("decoding", "free"))
-    target_dir = os.path.join("results", exp_name, exp_dir, cfg_name, dataset, factor)
+    target_dir = os.path.join(exp.get("results_root", "results"), exp_name, exp_dir, cfg_name, dataset, factor)
     if not os.path.isdir(target_dir):
         return False
 
