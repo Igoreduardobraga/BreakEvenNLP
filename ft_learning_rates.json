@@ -1,0 +1,50 @@
+{
+  "criterion": "min val_loss (best epoch), mean rank across datasets",
+  "bands": [
+    {
+      "name": "small",
+      "max_n": 100,
+      "probe_n": 100
+    },
+    {
+      "name": "medium",
+      "max_n": 1000,
+      "probe_n": 500
+    },
+    {
+      "name": "large",
+      "max_n": null,
+      "probe_n": 2500
+    }
+  ],
+  "datasets": [
+    "sst2",
+    "boolq",
+    "ag_news",
+    "snips"
+  ],
+  "lrs": [
+    1e-05,
+    2e-05,
+    3e-05,
+    5e-05
+  ],
+  "created": "2026-10-19T23:15:27",
+  "learning_rates": {
+    "bert": {
+      "large": 2e-05,
+      "medium": 2e-05,
+      "small": 3e-05
+    },
+    "deberta": {
+      "large": 1e-05,
+      "medium": 2e-05,
+      "small": 2e-05
+    },
+    "roberta": {
+      "large": 1e-05,
+      "medium": 3e-05,
+      "small": 2e-05
+    }
+  }
+}
