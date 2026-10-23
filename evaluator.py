@@ -54,6 +54,14 @@ def _parse_results(text, classes):
     return -1
 
 
+def _per_sample(values):
+    """Copy of per-sample metadata: a list, or for instruction tuning a dict
+    with one list per evaluation mode (list() of it would keep only the keys)."""
+    if values is None:
+        return []
+    return dict(values) if isinstance(values, dict) else list(values)
+
+
 class EvaluationResult(tuple):
     """
     3-tuple subclass containing (golden, predicted, decodeds) with qualitative metadata attributes.
@@ -64,8 +72,8 @@ class EvaluationResult(tuple):
         instance.golden = golden
         instance.predicted = predicted
         instance.decodeds = decodeds
-        instance.prompts = list(prompts) if prompts is not None else []
-        instance.inputs = list(inputs) if inputs is not None else []
+        instance.prompts = _per_sample(prompts)
+        instance.inputs = _per_sample(inputs)
         return instance
 
 

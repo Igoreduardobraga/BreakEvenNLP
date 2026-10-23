@@ -161,6 +161,36 @@ class TestResultStore(unittest.TestCase):
         self.assertAlmostEqual(float(rows[0]["f1_prompting"]), 0.78)
         self.assertAlmostEqual(float(rows[0]["f1_macro_icl"]), 0.86)
 
+    def test_instruction_tuning_keeps_prompts_and_inputs_per_mode(self):
+        """IT returns one prompt/input list per evaluation mode; each sample's
+        row must get its own, not the mode names."""
+        from evaluator import EvaluationResult
+        from result_store import ResultStore
+
+        store = ResultStore(
+            results_path=self.test_dir,
+            storage_format="csv",
+            **{**self.exp_meta, "experiment_type": "instruction_tuning"}
+        )
+        res = EvaluationResult(
+            {"prompting": [0, 1], "icl": [0, 1]},
+            {"prompting": [0, 1], "icl": [1, 1]},
+            {"prompting": ["neg", "pos"], "icl": ["pos", "pos"]},
+            prompts={"prompting": ["P0", "P1"], "icl": ["Q0", "Q1"]},
+            inputs={"prompting": ["a", "b"], "icl": ["a", "b"]},
+        )
+        store.record_fold(
+            repeat=0, fold=0, run_seed_used=1, randomness_factor_seeds={},
+            metrics={"f1_prompting": 1.0, "f1_macro_icl": 0.33},
+            real=res[0], predicted=res[1], decodeds=res[2],
+            prompts=res.prompts, inputs=res.inputs,
+        )
+        rows = store.load_predictions(as_dataframe=False)
+        got = {(r["experiment_type"], r["sample_id"]): (r["prompt"], r["input_text"]) for r in rows}
+        self.assertEqual(got[("instruction_tuning_prompting", "0")], ("P0", "a"))
+        self.assertEqual(got[("instruction_tuning_icl", "1")], ("Q1", "b"))
+        self.assertEqual(store.load_fold_details(0, 0)["prompts"]["icl"], ["Q0", "Q1"])
+
     def test_atomic_write_leaves_no_stray_tmp_files(self):
         """Verifies that staging files are cleaned up after atomic commit."""
         from result_store import ResultStore
