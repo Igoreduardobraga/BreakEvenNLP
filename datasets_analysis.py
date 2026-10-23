@@ -10,24 +10,24 @@ def info_dataset(nome, dataframes):
     print(f"Columns: {list(df.columns)}\n")
 
 def analisar_todos():
-    ds = load_dataset('glue', 'sst2')
+    ds = load_dataset('nyu-mll/glue', 'sst2')
     info_dataset('sst2', {'train': pd.DataFrame(ds['train']),
                           'validation': pd.DataFrame(ds['validation'])})
 
-    ds = load_dataset('glue', 'cola')
+    ds = load_dataset('nyu-mll/glue', 'cola')
     info_dataset('cola', {'train': pd.DataFrame(ds['train']),
                           'validation': pd.DataFrame(ds['validation'])})
 
-    ds = load_dataset('glue', 'mrpc')
+    ds = load_dataset('nyu-mll/glue', 'mrpc')
     info_dataset('mrpc', {'train': pd.DataFrame(ds['train']),
                           'validation': pd.DataFrame(ds['validation']),
                           'test': pd.DataFrame(ds['test'])})
 
-    ds = load_dataset('glue', 'rte')
+    ds = load_dataset('nyu-mll/glue', 'rte')
     info_dataset('rte', {'train': pd.DataFrame(ds['train']),
                          'validation': pd.DataFrame(ds['validation'])})
 
-    ds = load_dataset('super_glue', 'boolq')
+    ds = load_dataset('aps/super_glue', 'boolq')
     info_dataset('boolq', {'train': pd.DataFrame(ds['train']),
                            'validation': pd.DataFrame(ds['validation'])})
 
@@ -35,7 +35,7 @@ def analisar_todos():
     info_dataset('trec', {'train': pd.DataFrame(ds['train']),
                           'test': pd.DataFrame(ds['test'])})
 
-    ds = load_dataset('ag_news')
+    ds = load_dataset('fancyzhx/ag_news')
     info_dataset('ag_news', {'train': pd.DataFrame(ds['train']),
                              'test': pd.DataFrame(ds['test'])})
 

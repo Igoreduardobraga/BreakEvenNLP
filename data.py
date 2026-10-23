@@ -71,7 +71,7 @@ class SeededRandomSampler(RandomSampler):
 @lru_cache(maxsize=None)
 def load_text_and_targets(dataset_name: str, prompt_format: int):
     if dataset_name == 'sst2':
-        dataset = load_dataset('glue', 'sst2')
+        dataset = load_dataset('nyu-mll/glue', 'sst2')
         data = pd.concat([pd.DataFrame(dataset['train']),
                           pd.DataFrame(dataset['validation'])])
         if prompt_format in [0, 1, 2]:
@@ -85,7 +85,7 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
         return tuple(texts), tuple(targets), tuple(classes)
 
     elif dataset_name == 'cola':
-        dataset = load_dataset('glue', 'cola')
+        dataset = load_dataset('nyu-mll/glue', 'cola')
         data = pd.concat([pd.DataFrame(dataset['train']),
                           pd.DataFrame(dataset['validation'])])
         if prompt_format in [0, 1]:
@@ -101,7 +101,7 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
         return tuple(texts), tuple(targets), tuple(classes)
 
     elif dataset_name == 'mrpc':
-        dataset = load_dataset('glue', 'mrpc')
+        dataset = load_dataset('nyu-mll/glue', 'mrpc')
         data = pd.concat([pd.DataFrame(dataset['train']),
                           pd.DataFrame(dataset['validation']),
                           pd.DataFrame(dataset['test'])])
@@ -121,7 +121,7 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
         return tuple(texts), tuple(targets), tuple(classes)
 
     elif dataset_name == 'rte':
-        dataset = load_dataset('glue', 'rte')
+        dataset = load_dataset('nyu-mll/glue', 'rte')
         data = pd.concat([pd.DataFrame(dataset['train']),
                           pd.DataFrame(dataset['validation'])])
         texts = [
@@ -133,7 +133,7 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
         return tuple(texts), tuple(targets), tuple(classes)
 
     elif dataset_name == 'boolq':
-        dataset = load_dataset('super_glue', 'boolq')
+        dataset = load_dataset('aps/super_glue', 'boolq')
         data = pd.concat([pd.DataFrame(dataset['train']),
                           pd.DataFrame(dataset['validation'])])
         
@@ -156,7 +156,7 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
         return tuple(texts), tuple(targets), tuple(classes)
 
     elif dataset_name == 'ag_news':
-        dataset = load_dataset('ag_news')
+        dataset = load_dataset('fancyzhx/ag_news')
         data = pd.concat([pd.DataFrame(dataset['train']),
                           pd.DataFrame(dataset['test'])])
         classes = ['World', 'Sports', 'Business', 'Science and Technology']
