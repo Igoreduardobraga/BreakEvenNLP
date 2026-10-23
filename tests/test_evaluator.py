@@ -114,6 +114,23 @@ class TestParseResults(unittest.TestCase):
 
 class TestModelEvaluatorSeq2Seq(unittest.TestCase):
 
+    def test_seq2seq_never_truncates_the_prompt(self):
+        # T5's tokenizer caps at 512 tokens from the right, which cut the test
+        # sample off long ICL prompts; the full prompt must reach the model.
+        calls = []
+
+        class RecordingTokenizer(DummyTokenizer):
+            def __call__(self, texts, **kwargs):
+                calls.append(kwargs)
+                return super().__call__(texts, **kwargs)
+
+        evaluator = ModelEvaluator(model=DummySeq2SeqModel(['positive', 'negative']),
+                                   tokenizer=RecordingTokenizer(), model_name='flan-t5',
+                                   batch_size=2, device='cpu')
+        evaluator.evaluate(DummyDataset(), mode='icl')
+        self.assertTrue(calls)
+        self.assertTrue(all(c.get('truncation') is False for c in calls))
+
     def test_seq2seq_prompting_returns_standardized_tuple(self):
         tokenizer = DummyTokenizer()
         model = DummySeq2SeqModel(canned_outputs=['positive', 'negative'])

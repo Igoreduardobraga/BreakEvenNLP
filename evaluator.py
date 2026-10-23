@@ -103,7 +103,10 @@ class _Seq2SeqAdapter:
             inputs.extend(data)
             prompts.extend(batch_prompts)
 
-            encoded = self.tokenizer(batch_prompts, return_tensors='pt', padding='longest', truncation=True)
+            # No truncation: the tokenizer caps T5 at 512 tokens from the right,
+            # which cut the test sample and answer cue off long ICL prompts
+            # (BoolQ, AG News, DBpedia). T5's relative positions take longer input.
+            encoded = self.tokenizer(batch_prompts, return_tensors='pt', padding='longest', truncation=False)
             if hasattr(encoded, 'to'):
                 encoded = encoded.to(self.device)
 
@@ -348,15 +351,19 @@ class _VLLMAdapter:
     tests/test_vllm_parity.py (Q2/Q9).
     """
 
-    # Conservative per-family budgets for a 24GB RTX 4090 (Q8).
+    # Conservative per-family budgets for a 24GB RTX 4090 (Q8). vLLM rejects
+    # any prompt longer than max_model_len and aborts the fold, so it must
+    # hold the longest ICL prompt: DBpedia's 28 shots reach ~3k tokens
+    # (Mistral/Zephyr), ~4.5k (Phi/Gemma) and ~6.6k with Llama3's 5 shots per
+    # class. Llama2 stops at its 4096-token context.
     BUDGETS = {
-        'llama2': {'gpu_memory_utilization': 0.85, 'max_model_len': 2048, 'max_num_seqs': 16},
-        'llama3': {'gpu_memory_utilization': 0.85, 'max_model_len': 2048, 'max_num_seqs': 32},
-        'mistral': {'gpu_memory_utilization': 0.85, 'max_model_len': 2048, 'max_num_seqs': 32},
-        'zephyr': {'gpu_memory_utilization': 0.85, 'max_model_len': 2048, 'max_num_seqs': 32},
-        'qwen': {'gpu_memory_utilization': 0.85, 'max_model_len': 2048, 'max_num_seqs': 32},
-        'phi': {'gpu_memory_utilization': 0.85, 'max_model_len': 2048, 'max_num_seqs': 32},
-        'gemma': {'gpu_memory_utilization': 0.90, 'max_model_len': 1024, 'max_num_seqs': 8},
+        'llama2': {'gpu_memory_utilization': 0.85, 'max_model_len': 4096, 'max_num_seqs': 16},
+        'llama3': {'gpu_memory_utilization': 0.85, 'max_model_len': 8192, 'max_num_seqs': 32},
+        'mistral': {'gpu_memory_utilization': 0.85, 'max_model_len': 8192, 'max_num_seqs': 32},
+        'zephyr': {'gpu_memory_utilization': 0.85, 'max_model_len': 8192, 'max_num_seqs': 32},
+        'qwen': {'gpu_memory_utilization': 0.85, 'max_model_len': 8192, 'max_num_seqs': 32},
+        'phi': {'gpu_memory_utilization': 0.85, 'max_model_len': 8192, 'max_num_seqs': 32},
+        'gemma': {'gpu_memory_utilization': 0.90, 'max_model_len': 6144, 'max_num_seqs': 8},
     }
 
     QUANT_FORMAT = "bitsandbytes"

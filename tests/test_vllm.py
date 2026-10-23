@@ -169,6 +169,16 @@ class TestVLLMAdapter(unittest.TestCase):
             self.assertLessEqual(b["gpu_memory_utilization"], 0.90)
             self.assertGreaterEqual(b["max_model_len"], 1024)
 
+    def test_budgets_hold_the_longest_icl_prompts(self):
+        # vLLM aborts the fold on a prompt over max_model_len. Longest measured
+        # DBpedia ICL prompts (2 shots per class): ~3.3k tokens for Llama2/
+        # Mistral/Zephyr, ~4.4k Phi, ~4.8k Gemma.
+        from evaluator import _VLLMAdapter
+        longest = {"llama2": 3300, "mistral": 3300, "zephyr": 3300, "qwen": 4400,
+                   "phi": 4400, "gemma": 4800}
+        for fam, n_tokens in longest.items():
+            self.assertGreater(_VLLMAdapter.BUDGETS[fam]["max_model_len"], n_tokens + 10, fam)
+
     def test_missing_vllm_raises_helpful_error(self):
         import evaluator as evmod
         saved = sys.modules.pop("vllm", None)

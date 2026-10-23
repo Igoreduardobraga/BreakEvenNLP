@@ -42,6 +42,19 @@ def _require_it_deps():
 IT_MAX_LEN = 1024
 
 
+def bnb_4bit_config():
+    """4-bit NF4 setup shared by prompting, ICL and IT, and matching vLLM's
+    bitsandbytes quantization: the approaches differ only in how the model
+    is used, never in how it is quantized. The bare load_in_4bit kwarg meant
+    FP4 with float32 compute, and transformers>=5 no longer accepts it."""
+    return BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16
+    )
+
+
 def tokenize_it_pairs(pairs, tokenizer, seq2seq, max_len=IT_MAX_LEN):
     """Tokenizes (prompt, completion) pairs so the loss covers only the completion.
 
@@ -176,13 +189,6 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
     if MODEL == 'flan-t5':
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name).cuda()
     elif MODEL in ['mistral', 'zephyr', 'llama3', 'qwen', 'phi', 'gemma']:
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16
-        )
-        
         target_modules = ['up_proj', 'down_proj', 'gate_proj', 'k_proj', 'q_proj', 'v_proj', 'o_proj', 'qkv_proj', 'gate_up_proj']
 
         peft_config = LoraConfig(
@@ -195,7 +201,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         )
         
         access_token = os.environ.get('HUGGINGFACE_TOKEN', None)
-        model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=bnb_config, device_map='auto', token=access_token)
+        model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=bnb_4bit_config(), device_map='auto', token=access_token)
         tokenizer = AutoTokenizer.from_pretrained(model_name, token=access_token)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
@@ -598,7 +604,7 @@ def main():
             if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
             
-            model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", load_in_4bit=True, token=access_token)
+            model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", quantization_config=bnb_4bit_config(), token=access_token)
             model.config.pad_token_id = tokenizer.pad_token_id
             generation_config = model.generation_config
             generation_config.num_beams = 1
@@ -608,7 +614,7 @@ def main():
             model.eval()
         elif MODEL in ['mistral', 'zephyr', 'llama3', 'qwen', 'phi', 'gemma']:
             access_token = os.environ.get('HUGGINGFACE_TOKEN', None)
-            model = AutoModelForCausalLM.from_pretrained(model_name, load_in_4bit=True, device_map="auto", token=access_token)
+            model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=bnb_4bit_config(), device_map="auto", token=access_token)
             tokenizer = AutoTokenizer.from_pretrained(model_name, token=access_token)
             tokenizer.padding_side = 'left'
         
