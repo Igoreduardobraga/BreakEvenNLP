@@ -15,6 +15,7 @@ import random
 import pickle
 import argparse
 import atexit
+import dataclasses
 import torch
 import numpy as np
 import os
@@ -79,6 +80,48 @@ def tokenize_it_pairs(pairs, tokenizer, seq2seq, max_len=IT_MAX_LEN):
                          'attention_mask': [1] * len(input_ids),
                          'labels': [-100] * len(prompt_ids) + completion_ids})
     return examples
+
+
+def warmup_ratio_kwargs(ratio):
+    """Linear warmup over a fraction of the steps on both transformers lines:
+    transformers>=5 dropped warmup_ratio and reads a float warmup_steps below 1
+    as that fraction, while before it warmup_steps only counted steps."""
+    fields = {f.name for f in dataclasses.fields(TrainingArguments)}
+    return {'warmup_ratio': ratio} if 'warmup_ratio' in fields else {'warmup_steps': ratio}
+
+
+def it_training_args(output_dir, factor_seeds, batch_size, learning_rate, num_epochs,
+                     seq2seq, select_best):
+    """TrainingArguments of one instruction-tuning fold.
+
+    The Trainer reseeds every RNG when it is built: seed and data_seed carry
+    the fold's model-randomness and sample-order seeds, the ones fine-tuning
+    uses for dropout and batch order. Without a validation split (select_best
+    False) every epoch trains and the final adapter is kept.
+    """
+    if select_best:
+        selection = dict(eval_strategy="epoch", save_strategy="epoch", save_total_limit=1,
+                         load_best_model_at_end=True, metric_for_best_model="eval_loss",
+                         greater_is_better=False)
+    else:
+        selection = dict(eval_strategy="no", save_strategy="no")
+    return TrainingArguments(
+        output_dir=output_dir,
+        per_device_train_batch_size=batch_size,
+        learning_rate=learning_rate,
+        num_train_epochs=num_epochs,
+        logging_strategy="no",
+        gradient_accumulation_steps=1,
+        optim="adamw_torch" if seq2seq else "paged_adamw_8bit",
+        lr_scheduler_type="linear",
+        seed=factor_seeds['model_randomness'],
+        data_seed=factor_seeds['sample_order'],
+        # PeftModel hides the labels argument from Trainer's signature check;
+        # without it eval_loss is never computed for early stopping.
+        label_names=['labels'],
+        **selection,
+        **warmup_ratio_kwargs(0.1),
+    )
 
 def compute_macro_f1(golden, predicted, failed_label=-1):
     total_samples = len(predicted)
@@ -219,12 +262,11 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         custom_instruction=getattr(dataset, 'instructions', None)
     )
 
-    all_idx = np.arange(len(pairs))
-    train_idx, val_idx = train_test_split(
-        all_idx, test_size=0.1,
-        random_state=randomness_factor_seeds['sample_order'],
-        shuffle=True
-    )
+    # Same validation rule as fine-tuning: the best epoch is picked only when
+    # the split is large enough to rank epochs; below that every epoch trains
+    # on all N samples.
+    train_idx, val_idx, select_best = split_train_val(
+        dataset.train_targets, dataset.num_classes, randomness_factor_seeds['sample_order'])
 
     train_pairs = [pairs[i] for i in train_idx]
     val_pairs   = [pairs[i] for i in val_idx]
@@ -240,28 +282,10 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
 
     seq2seq = MODEL == 'flan-t5'
     train_ds = Dataset.from_list(tokenize_it_pairs(train_pairs, tokenizer, seq2seq))
-    val_ds   = Dataset.from_list(tokenize_it_pairs(val_pairs, tokenizer, seq2seq))
+    val_ds   = Dataset.from_list(tokenize_it_pairs(val_pairs, tokenizer, seq2seq)) if select_best else None
 
-    training_args = TrainingArguments(
-        output_dir=investigation_path,
-        per_device_train_batch_size=BATCH_SIZE,
-        learning_rate=LEARNING_RATE,
-        num_train_epochs=NUM_EPOCHS,
-        logging_strategy="no",
-        save_strategy="epoch", 
-        eval_strategy="epoch",
-        load_best_model_at_end=True,
-        metric_for_best_model="eval_loss",
-        save_total_limit=1,
-        greater_is_better=False,
-        gradient_accumulation_steps=1,
-        optim="paged_adamw_8bit" if MODEL != 'flan-t5' else 'adamw_torch',
-        lr_scheduler_type="linear",
-        warmup_ratio=0.1,
-        # PeftModel hides the labels argument from Trainer's signature check;
-        # without it eval_loss is never computed for early stopping.
-        label_names=['labels'],
-    )
+    training_args = it_training_args(investigation_path, randomness_factor_seeds, BATCH_SIZE,
+                                     LEARNING_RATE, NUM_EPOCHS, seq2seq, select_best)
 
     # Pads input_ids/attention_mask with the tokenizer and labels with -100;
     # with the T5 model it also builds decoder_input_ids from the labels.
@@ -274,7 +298,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         train_dataset=train_ds,
         eval_dataset=val_ds,
         data_collator=collator,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=5, early_stopping_threshold=0.0)]
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=5, early_stopping_threshold=0.0)] if select_best else None
     )
 
     trainer.train()
@@ -308,17 +332,16 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
 
 # Early stopping needs a validation split large enough to rank epochs: below
 # FT_MIN_VAL_SAMPLES (10% of N, i.e. N < 250) the model trains every epoch on
-# all N labelled samples, as ICL uses all N. With holdout_val the LR sweep
-# still holds out 10% in that regime, only to score the final model.
+# all N labelled samples, as ICL uses all N. Instruction tuning picks its best
+# epoch under the same rule. With holdout_val the LR sweep still holds out 10%
+# in that regime, only to score the final model.
 FT_VAL_RATIO = 0.1
 FT_MIN_VAL_SAMPLES = 25
 
 
-def make_train_val_loaders(dataset, batch_size, shuffle_seed, holdout_val=False):
-    """Returns (train_loader, val_loader, early_stopping)."""
-    indices = list(range(len(dataset.train_text)))
-    y = np.array(dataset.train_targets)
-    n_classes = dataset.n_classes
+def split_train_val(targets, n_classes, seed, holdout_val=False):
+    """Returns (train_idx, val_idx, early_stopping) over the labelled pool."""
+    indices = list(range(len(targets)))
     n_val = int(len(indices) * FT_VAL_RATIO)
 
     early_stopping = n_val >= max(n_classes, FT_MIN_VAL_SAMPLES)
@@ -326,13 +349,20 @@ def make_train_val_loaders(dataset, batch_size, shuffle_seed, holdout_val=False)
         tr_idx, val_idx = train_test_split(
             indices,
             test_size=FT_VAL_RATIO,
-            random_state=shuffle_seed,
-            stratify=y
+            random_state=seed,
+            stratify=np.array(targets)
         )
     else:
         print(f"Validation split of {n_val} samples is too small: training on all "
               f"{len(indices)} samples for every epoch, without early stopping")
         tr_idx, val_idx = indices, []
+    return tr_idx, val_idx, early_stopping
+
+
+def make_train_val_loaders(dataset, batch_size, shuffle_seed, holdout_val=False):
+    """Returns (train_loader, val_loader, early_stopping)."""
+    tr_idx, val_idx, early_stopping = split_train_val(
+        dataset.train_targets, dataset.n_classes, shuffle_seed, holdout_val)
 
     train_ds = copy.copy(dataset);  train_ds.train = True
     val_ds   = copy.copy(dataset);  val_ds.train   = True
