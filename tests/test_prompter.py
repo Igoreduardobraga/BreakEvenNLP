@@ -158,9 +158,23 @@ class TestPromptFormatterFewShotICL(unittest.TestCase):
     def test_llama3_icl_native(self):
         prompter = PromptFormatter(model_name="llama3", prompt_format=0)
         prompt = prompter.format("Great movie!", dataset_name="sst2", shots=self.shots)
-        self.assertIn("<|start_header_id|>user<|end_header_id|>\n\nText: I loved it<|eot_id|>", prompt)
+        self.assertIn("<|start_header_id|>user<|end_header_id|>\n\nText: I loved it\nBased on the text above, determine the sentiment analysis. Answer:<|eot_id|>", prompt)
         self.assertIn("<|start_header_id|>assistant<|end_header_id|>\n\npositive<|eot_id|>", prompt)
         self.assertIn("Text: Great movie!\nBased on the text above, determine the sentiment analysis. Answer:<|eot_id|>", prompt)
+
+    def test_demonstrations_are_formatted_like_the_query(self):
+        # A demonstration's user turn must be exactly the query's turn for the
+        # same text, edge whitespace included (every GLUE SST-2 text ends in a
+        # space). BoolQ has no sentence prefix, which used to differ too.
+        tok = MagicMock()
+        tok.apply_chat_template.side_effect = lambda messages, **kw: messages
+        for family in ("qwen", "llama3", "phi", "gemma", "mistral", "zephyr"):
+            for dataset in ("sst2", "boolq"):
+                with self.subTest(family=family, dataset=dataset):
+                    messages = PromptFormatter(model_name=family, tokenizer=tok).format(
+                        "same text ", dataset_name=dataset, shots=[("same text ", "positive")])
+                    user_turns = [m["content"] for m in messages if m["role"] == "user"]
+                    self.assertEqual(user_turns[-2], user_turns[-1])
 
     def test_chatgpt_icl(self):
         prompter = PromptFormatter(model_name="chatgpt", prompt_format=0)

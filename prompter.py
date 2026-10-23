@@ -162,6 +162,9 @@ class PromptFormatter:
         """
         info = self.get_task_info(dataset_name, classes=classes, custom_instruction=custom_instruction)
         sample_str = text.strip()
+        # Demonstrations get the same normalisation as the query text.
+        if shots:
+            shots = [(str(t).strip(), str(l).strip()) for t, l in shots]
 
         formatters = {
             "qwen": self._format_qwen,
@@ -392,8 +395,6 @@ class PromptFormatter:
         instruction = info["instruction"]
         task_type = info["task_type"]
         options_str = info["options_str"]
-        s_start = info["sentence_start"]
-        prefix = f"{s_start}: " if s_start else ""
 
         sys_msg = (
             f"You are an expert classifier. Your task is to determine the {task_type}. "
@@ -401,21 +402,18 @@ class PromptFormatter:
             f"Do not explain. Do not output the number, only the class name."
         )
 
+        # Demonstrations are user turns built exactly like the query.
+        def user_turn(text):
+            if self.prompt_format == 0:
+                return f"Text: {text}\nBased on the text above, determine the {task_type}. Answer:"
+            return f"{text} {instruction} "
+
         messages = [{"role": "system", "content": sys_msg}]
         if shots and len(shots) > 0:
             for s in shots:
-                if self.prompt_format == 0:
-                    u_content = f"{prefix}{s[0]}"
-                else:
-                    u_content = f"{s[0]} {instruction}"
-                messages.append({"role": "user", "content": u_content})
+                messages.append({"role": "user", "content": user_turn(s[0])})
                 messages.append({"role": "assistant", "content": s[1]})
-
-        if self.prompt_format == 0:
-            q_content = f"Text: {sample}\nBased on the text above, determine the {task_type}. Answer:"
-        else:
-            q_content = f"{sample} {instruction} "
-        messages.append({"role": "user", "content": q_content})
+        messages.append({"role": "user", "content": user_turn(sample)})
 
         if hasattr(self.tokenizer, "apply_chat_template"):
             return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -464,8 +462,6 @@ class PromptFormatter:
         instruction = info["instruction"]
         task_type = info["task_type"]
         options_str = info["options_str"]
-        s_start = info["sentence_start"]
-        prefix = f"{s_start}: " if s_start else ""
 
         sys_msg = (
             f"You are a helpful assistant. Your task is to determine the {task_type}. "
@@ -473,21 +469,18 @@ class PromptFormatter:
             f"Do not explain. Answer only with the class name."
         )
 
+        # Demonstrations are user turns built exactly like the query.
+        def user_turn(text):
+            if self.prompt_format == 0:
+                return f"Text: {text}\nBased on the text above, determine the {task_type}. Answer:"
+            return f"{text} {instruction} "
+
         messages = [{"role": "system", "content": sys_msg}]
         if shots and len(shots) > 0:
             for s in shots:
-                if self.prompt_format == 0:
-                    u_content = f"{prefix}{s[0]}"
-                else:
-                    u_content = f"{s[0]} {instruction}"
-                messages.append({"role": "user", "content": u_content})
+                messages.append({"role": "user", "content": user_turn(s[0])})
                 messages.append({"role": "assistant", "content": s[1]})
-
-        if self.prompt_format == 0:
-            q_content = f"Text: {sample}\nBased on the text above, determine the {task_type}. Answer:"
-        else:
-            q_content = f"{sample} {instruction} "
-        messages.append({"role": "user", "content": q_content})
+        messages.append({"role": "user", "content": user_turn(sample)})
 
         if hasattr(self.tokenizer, "apply_chat_template"):
             return self.tokenizer.apply_chat_template(
