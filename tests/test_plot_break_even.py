@@ -1,11 +1,15 @@
 """Instruction tuning gives two curves in the break-even plot."""
+import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
 
 import pandas as pd
 
-from analysis import plot_break_even as pbe
+# The plots run from .venv; .venv-vllm has no matplotlib.
+HAS_MATPLOTLIB = importlib.util.find_spec("matplotlib") is not None
+if HAS_MATPLOTLIB:
+    from analysis import plot_break_even as pbe
 
 
 def _summary(root, exp_type, exp_dir, model, **metrics):
@@ -18,6 +22,7 @@ def _summary(root, exp_type, exp_dir, model, **metrics):
     pd.DataFrame([row]).to_parquet(path / "summary.parquet")
 
 
+@unittest.skipUnless(HAS_MATPLOTLIB, "needs matplotlib")
 class TestInstructionTuningCurves(unittest.TestCase):
 
     def test_it_is_plotted_zero_shot_and_with_icl(self):
