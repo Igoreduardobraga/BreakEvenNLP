@@ -4,7 +4,9 @@ medio +- desvio entre folds (banda), uma linha por (modelo x abordagem),
 um painel por dataset + figura combinada.
 
 Regras assentadas (preservadas):
-- Metrica: finetuning/prompting/icl -> f1_macro; instruction_tuning -> f1_macro_icl.
+- Metrica: finetuning/prompting/icl -> f1_macro. O IT vira duas linhas:
+  instruction_tuning -> f1_prompting (zero-shot, o formato em que e treinado)
+  e instruction_tuning_icl -> f1_macro_icl (o mesmo modelo avaliado com ICL).
   Sem forja: nenhum ajuste artificial (+/- offsets) copiado do script da POC I.
 - Rotulo interno da linha: (modelo x abordagem), ex. mistral/it.
 - Folds incompletos: warning no log (moda de n_folds por dataset).
@@ -56,6 +58,7 @@ APPROACH_PRETTY = {
     "prompting": "Prompting",
     "instruction_tuning": "Instruction Tuning",
     "instruction_tuning_steps": "Instruction Tuning",
+    "instruction_tuning_icl": "Instruction Tuning + ICL",
 }
 
 MODEL_PRETTY = {
@@ -78,6 +81,7 @@ BREAK_EVEN_CONFIG = {
     "icl": {"color": "gray", "linestyle": ":"},
     "instruction_tuning": {"color": "gray", "linestyle": "-."},
     "instruction_tuning_steps": {"color": "gray", "linestyle": "-."},
+    "instruction_tuning_icl": {"color": "gray", "linestyle": (0, (3, 1, 1, 1, 1, 1))},
 }
 
 # Ordem fixa da legenda por abordagem.
@@ -87,15 +91,17 @@ APPROACH_ORDER = {
     "prompting": 2,
     "instruction_tuning": 3,
     "instruction_tuning_steps": 3,
+    "instruction_tuning_icl": 4,
 }
 
-# Cor fixa por abordagem (C0-C3 do ciclo tab10).
+# Cor fixa por abordagem (C0-C4 do ciclo tab10).
 APPROACH_COLOR = {
     "finetuning": "#1f77b4",
     "icl": "#ff7f0e",
     "prompting": "#2ca02c",
     "instruction_tuning": "#d62728",
     "instruction_tuning_steps": "#d62728",
+    "instruction_tuning_icl": "#9467bd",
 }
 
 # Estilo por modelo (ordem fixa p/ estabilidade entre paineis/datasets).
@@ -117,8 +123,13 @@ def style_for(line: str):
     return color, ls, mk
 
 
+IT_TYPES = ("instruction_tuning", "instruction_tuning_steps")
+
+
 def metric_for(row):
-    if row["experiment_type"] in ("instruction_tuning", "instruction_tuning_steps"):
+    if row["experiment_type"] in IT_TYPES:
+        return row["f1_prompting"]
+    if row["experiment_type"] == "instruction_tuning_icl":
         return row["f1_macro_icl"]
     return row["f1_macro"]
 
@@ -197,6 +208,10 @@ def load_all(results_dir: Path) -> pd.DataFrame:
     if not frames:
         raise SystemExit(f"nenhum summary.parquet em {results_dir}")
     full = pd.concat(frames, ignore_index=True)
+    # Cada fold de IT avalia o modelo treinado em zero-shot e com ICL; a
+    # avaliacao com ICL vira a abordagem instruction_tuning_icl.
+    it_icl = full[full["experiment_type"].isin(IT_TYPES)].assign(experiment_type="instruction_tuning_icl")
+    full = pd.concat([full, it_icl], ignore_index=True)
     # O eixo x usa o N efetivo: o pool seleciona ceil(N/classes) por classe e
     # uma classe que acaba contribui so com o que tem (ex.: SNIPS N=10 -> 14,
     # BoolQ N=10000 -> ~9300). Resultados novos gravam o valor real por fold
