@@ -102,5 +102,21 @@ class TestMainSweep(unittest.TestCase):
         self.assertEqual(ran, [10, 50])
 
 
+class TestShots(unittest.TestCase):
+
+    def test_it_is_evaluated_with_the_icl_shots(self):
+        # IT + ICL must differ from ICL only by the tuning, not by the number
+        # of demonstrations (main.py defaults to 4).
+        def shots(exp):
+            cmd = exp["cmd_args"]
+            return cmd[cmd.index("--num_shots") + 1]
+
+        icl = {shots(e) for e in rx.generate_icl_commands() + rx.generate_icl_modern_commands()}
+        self.assertEqual(icl, {"2"})
+        for generate in (rx.generate_it_flan_t5_commands, rx.generate_it_mistral_zephyr_commands,
+                         rx.generate_it_modern_commands):
+            self.assertEqual({shots(e) for e in generate()}, icl, generate.__name__)
+
+
 if __name__ == "__main__":
     unittest.main()

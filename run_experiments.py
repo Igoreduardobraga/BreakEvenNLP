@@ -4,7 +4,8 @@ run_experiments.py
 Orquestrador Python de experimentos para o BreakEvenNLP.
 Reproduz as execuções e hiperparâmetros dos scripts originais de
 'legacy/run_experiments/', exceto o conjunto de teste, que agora é comum
-a todas as abordagens (TEST_SET_ARGS). Suporta:
+a todas as abordagens (TEST_SET_ARGS), e os shots com que o IT é avaliado
+em ICL, agora iguais aos do ICL (ICL_SHOTS_ARGS). Suporta:
 - Seleção granular por script, dataset ou modelo
 - Dry-run para visualização prévia dos comandos
 - Gestão de logs em arquivo por execução
@@ -31,6 +32,12 @@ from result_store import experiment_dir_name
 # fold e seed, FT, IT, prompting e ICL avaliam exatamente as mesmas amostras.
 # (Os .sh em legacy/ avaliavam FT/IT no fold inteiro.)
 TEST_SET_ARGS = ["--full_test", "0", "--num_labelled_test", "1000"]
+
+# Demonstrações por classe no ICL. Depois do treino o IT também é avaliado
+# com ICL (f1_macro_icl) e usa o mesmo número, para que IT + ICL e ICL
+# difiram só pelo treino. (Os .sh em legacy/ deixavam o IT no default 4 do
+# main.py.)
+ICL_SHOTS_ARGS = ["--num_shots", "2"]
 
 DATASET_CONFIGS = {
     "sst2": {
@@ -188,7 +195,7 @@ def generate_icl_commands() -> List[Dict[str, Any]]:
                     "--model", m,
                     "--num_labelled", str(n),
                     *TEST_SET_ARGS,
-                    "--num_shots", "2",
+                    *ICL_SHOTS_ARGS,
                     "--batch_size", "2",
                     "--factor", "golden_model",
                     "--rskf_splits", str(cfg["rskf_splits"]),
@@ -271,6 +278,7 @@ def generate_it_flan_t5_commands() -> List[Dict[str, Any]]:
                 "--model", model,
                 "--num_labelled", str(n),
                 *TEST_SET_ARGS,
+                *ICL_SHOTS_ARGS,
                 "--batch_size", "4",
                 "--num_epochs", "5",
                 "--lr", "1e-5",
@@ -315,6 +323,7 @@ def generate_it_mistral_zephyr_commands() -> List[Dict[str, Any]]:
                     "--model", m,
                     "--num_labelled", str(n),
                     *TEST_SET_ARGS,
+                    *ICL_SHOTS_ARGS,
                     "--batch_size", "4",
                     "--num_epochs", "5",
                     "--lr", "1e-5",
@@ -449,7 +458,7 @@ def generate_icl_modern_commands() -> List[Dict[str, Any]]:
                     "--model_size", m_size,
                     "--num_labelled", str(n),
                     *TEST_SET_ARGS,
-                    "--num_shots", "2",
+                    *ICL_SHOTS_ARGS,
                     "--batch_size", "2",
                     "--factor", "golden_model",
                     "--rskf_splits", str(cfg["rskf_splits"]),
@@ -545,6 +554,7 @@ def generate_it_modern_commands() -> List[Dict[str, Any]]:
                     "--model_size", m_size,
                     "--num_labelled", str(n),
                     *TEST_SET_ARGS,
+                    *ICL_SHOTS_ARGS,
                     "--batch_size", "4",
                     "--num_epochs", "5",
                     "--lr", "1e-5",
