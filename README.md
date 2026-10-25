@@ -32,9 +32,11 @@ uv run python run_experiments.py --script finetuning --datasets sst2 boolq ag_ne
 
 # prompting / ICL / IT with the modern models (from .venv-vllm)
 python run_experiments.py --script prompting-modern --models qwen phi gemma --engine vllm --decoding guided
-python run_experiments.py --script icl-modern --models qwen phi gemma --model-sizes 9b mini 26b
-python run_experiments.py --script it-modern --models qwen phi gemma
+python run_experiments.py --script icl-modern --models qwen phi gemma --model-sizes 9b mini 26b --engine vllm --decoding guided
+python run_experiments.py --script it-modern --models qwen phi gemma --decoding guided
 ```
+
+`--decoding guided` restricts every answer to one of the class names: through vLLM's structured outputs for prompting and ICL, and on HF, where the instruction-tuned model is evaluated, by masking every token that would take the answer off the class names.
 
 Useful flags: `--dry-run` lists the commands without running them, `--force` reruns finished configurations, `--gpus 0` sets `CUDA_VISIBLE_DEVICES`. Prompting/ICL configurations of the same model are grouped into a single `main.py --sweep` process so the model is loaded once; `--no-group` runs one process per configuration. See `python run_experiments.py --help` for the list of scripts.
 

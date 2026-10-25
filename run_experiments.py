@@ -807,13 +807,13 @@ def main():
         "--engine",
         default="hf",
         choices=["hf", "vllm"],
-        help="Motor de inferência repassado ao main.py (default: hf)."
+        help="Motor de inferência do prompting/ICL repassado ao main.py (default: hf); o IT sempre avalia no HF."
     )
     parser.add_argument(
         "--decoding",
         default="free",
         choices=["free", "guided"],
-        help="Decoding repassado ao main.py; guided exige --engine vllm."
+        help="Decoding repassado ao main.py no prompting, ICL e IT; guided restringe a resposta aos nomes das classes."
     )
     parser.add_argument(
         "--no-group",
@@ -822,8 +822,6 @@ def main():
     )
 
     args = parser.parse_args()
-    if args.decoding == "guided" and args.engine != "vllm":
-        parser.error("--decoding guided requires --engine vllm")
 
     # 1. Coleta os comandos originais
     all_experiments: List[Dict[str, Any]] = []
@@ -846,6 +844,10 @@ def main():
             exp["cmd_args"] = list(exp["cmd_args"]) + [
                 "--engine", args.engine, "--decoding", args.decoding]
             exp["engine"] = args.engine
+            exp["decoding"] = args.decoding
+        elif exp["experiment_type"] in ("instruction_tuning", "instruction_tuning_steps"):
+            # O modelo treinado é avaliado no HF, que também restringe o decoding.
+            exp["cmd_args"] = list(exp["cmd_args"]) + ["--decoding", args.decoding]
             exp["decoding"] = args.decoding
         filtered_experiments.append(exp)
 

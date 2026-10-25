@@ -9,6 +9,7 @@ import copy
 import os
 import pickle
 import time
+import weakref
 from prompter import PromptFormatter
 
 
@@ -77,6 +78,60 @@ class EvaluationResult(tuple):
         return instance
 
 
+_TOKEN_SURFACES = weakref.WeakKeyDictionary()
+
+
+def _token_surfaces(tokenizer):
+    """Every token's text as tokenizer.decode renders it at the start of the
+    answer and after another token, as {text: [ids]} maps. They differ for
+    SentencePiece, whose decode drops the leading space of the first token."""
+    if tokenizer not in _TOKEN_SURFACES:
+        ids = list(range(len(tokenizer)))
+        anchor = tokenizer("a", add_special_tokens=False)["input_ids"][-1:]
+        head = tokenizer.decode(anchor)
+        start, after = {}, {}
+        for tid, first, following in zip(ids, tokenizer.batch_decode([[i] for i in ids]),
+                                         tokenizer.batch_decode([anchor + [i] for i in ids])):
+            start.setdefault(first, []).append(tid)
+            if following.startswith(head):
+                after.setdefault(following[len(head):], []).append(tid)
+        _TOKEN_SURFACES[tokenizer] = start, after
+    return _TOKEN_SURFACES[tokenizer]
+
+
+class _ChoiceConstraint:
+    """Greedy decoding restricted to the class names on HF, the counterpart of
+    vLLM's guided choice: a token is allowed only if the answer stays a prefix
+    of some class name, and the answer may end (end_ids) only once it is a
+    whole class name."""
+
+    def __init__(self, tokenizer, classes, end_ids):
+        self.tokenizer = tokenizer
+        self.classes = [str(c) for c in classes]
+        self.end_ids = list(end_ids)
+        self.start, self.after = _token_surfaces(tokenizer)
+        self._allowed = {}
+
+    def allowed(self, answer_ids):
+        text = self.tokenizer.decode(answer_ids) if answer_ids else ""
+        key = (text, not answer_ids)
+        if key not in self._allowed:
+            surfaces = self.after if answer_ids else self.start
+            allowed = set(self.end_ids) if text in self.classes else set()
+            for name in self.classes:
+                if name.startswith(text):
+                    rest = name[len(text):]
+                    for k in range(1, len(rest) + 1):
+                        allowed.update(surfaces.get(rest[:k], ()))
+            # A finished answer (followed by the end token or padding) may only end.
+            self._allowed[key] = sorted(allowed) or self.end_ids
+        return self._allowed[key]
+
+    def prefix_allowed_tokens_fn(self, prompt_len):
+        """For generate(): the answer is what follows the first prompt_len ids."""
+        return lambda batch_id, ids: self.allowed(ids[prompt_len:].tolist())
+
+
 class _Seq2SeqAdapter:
     """Internal adapter for encoder-decoder models (e.g. Flan-T5)."""
 
@@ -89,7 +144,7 @@ class _Seq2SeqAdapter:
         self.device = device
         self.prompter = prompter or PromptFormatter(model_name='flan-t5', prompt_format=prompt_format, tokenizer=tokenizer)
 
-    def evaluate(self, dataset, mode='prompting'):
+    def evaluate(self, dataset, mode='prompting', decoding='free'):
         golden = []
         predicted = []
         decodeds = []
@@ -99,6 +154,11 @@ class _Seq2SeqAdapter:
         shots = getattr(dataset, 'context_samples', None) if mode == 'icl' else None
         dataset_name = getattr(dataset, 'dataset_name', 'sst2')
         custom_inst = getattr(dataset, 'instructions', None)
+        guided = {}
+        if decoding == 'guided':
+            # The decoder starts from its start token; the answer follows it.
+            constraint = _ChoiceConstraint(self.tokenizer, dataset.classes, [self.tokenizer.eos_token_id])
+            guided['prefix_allowed_tokens_fn'] = constraint.prefix_allowed_tokens_fn(1)
 
         for data, labels in dataset.batch_data_for_evaluation(self.batch_size):
             batch_prompts = self.prompter.format_batch(
@@ -131,7 +191,8 @@ class _Seq2SeqAdapter:
                 **gen_inputs,
                 max_new_tokens=self.max_new_tokens,
                 do_sample=False,
-                num_beams=1
+                num_beams=1,
+                **guided
             )
             decoded = self.tokenizer.batch_decode(out, skip_special_tokens=True)
 
@@ -159,7 +220,7 @@ class _CausalLMAdapter:
         self.device = device
         self.prompter = prompter or PromptFormatter(model_name=model_family, prompt_format=prompt_format, tokenizer=tokenizer)
 
-    def evaluate(self, dataset, mode='prompting'):
+    def evaluate(self, dataset, mode='prompting', decoding='free'):
         golden = []
         predicted = []
         decodeds = []
@@ -182,6 +243,7 @@ class _CausalLMAdapter:
         shots = getattr(dataset, 'context_samples', None) if mode == 'icl' else None
         dataset_name = getattr(dataset, 'dataset_name', 'sst2')
         custom_inst = getattr(dataset, 'instructions', None)
+        constraint = _ChoiceConstraint(self.tokenizer, dataset.classes, terminators) if decoding == 'guided' else None
 
         for data, labels in dataset.batch_data_for_evaluation(self.batch_size):
             for sample in data:
@@ -227,6 +289,9 @@ class _CausalLMAdapter:
                     gen_kwargs['pad_token_id'] = self.tokenizer.pad_token_id
                 elif hasattr(self.tokenizer, 'eos_token_id') and self.tokenizer.eos_token_id is not None:
                     gen_kwargs['pad_token_id'] = self.tokenizer.eos_token_id
+
+                if constraint is not None:
+                    gen_kwargs['prefix_allowed_tokens_fn'] = constraint.prefix_allowed_tokens_fn(input_len)
 
                 if self.generation_config is not None:
                     gen_kwargs['generation_config'] = self.generation_config
@@ -599,7 +664,8 @@ class ModelEvaluator:
             dataset: A dataset object providing `batch_data_for_evaluation`, `classes`, and prompt metadata.
             mode: Operating mode ('prompting' for zero-shot, 'icl' for in-context learning).
             partial_save_path: Optional path to save and resume partial results (for API models).
-            decoding: 'free' (unconstrained) or 'guided' (vLLM guided_choice only).
+            decoding: 'free' (unconstrained) or 'guided' (answer restricted to the class names:
+                vLLM structured outputs, or token masking on HF).
             seed: Per-call sampling seed (vLLM only), so one engine can serve many folds.
 
         Returns:
@@ -609,11 +675,11 @@ class ModelEvaluator:
             raise ValueError(f"Unknown evaluation mode '{mode}'. Supported modes: 'prompting', 'icl'.")
         if decoding not in ('free', 'guided'):
             raise ValueError(f"Unknown decoding '{decoding}'. Use 'free' or 'guided'.")
-        if decoding == 'guided' and not isinstance(self.adapter, _VLLMAdapter):
-            raise ValueError("Guided decoding is only available via the vLLM engine (Q14).")
+        if decoding == 'guided' and isinstance(self.adapter, _APIAdapter):
+            raise ValueError("Guided decoding is not available for API models.")
 
         if isinstance(self.adapter, _APIAdapter):
             return self.adapter.evaluate(dataset, mode=mode, partial_save_path=partial_save_path)
         if isinstance(self.adapter, _VLLMAdapter):
             return self.adapter.evaluate(dataset, mode=mode, decoding=decoding, seed=seed)
-        return self.adapter.evaluate(dataset, mode=mode)
+        return self.adapter.evaluate(dataset, mode=mode, decoding=decoding)

@@ -118,5 +118,21 @@ class TestShots(unittest.TestCase):
             self.assertEqual({shots(e) for e in generate()}, icl, generate.__name__)
 
 
+class TestDecodingFlags(unittest.TestCase):
+
+    def test_it_gets_the_decoding_but_not_the_engine(self):
+        # The tuned model is evaluated on HF, which also restricts the decoding.
+        import contextlib
+        import io
+        argv = ["run_experiments.py", "--script", "it-modern", "--datasets", "sst2", "--models", "qwen",
+                "--model-sizes", "9b", "--decoding", "guided", "--dry-run", "--logs-dir", tempfile.mkdtemp()]
+        out = io.StringIO()
+        with mock.patch("sys.argv", argv), contextlib.redirect_stdout(out):
+            rx.main()
+        commands = [line for line in out.getvalue().splitlines() if "Comando:" in line]
+        self.assertTrue(commands)
+        self.assertTrue(all("--decoding guided" in c and "--engine" not in c for c in commands))
+
+
 if __name__ == "__main__":
     unittest.main()

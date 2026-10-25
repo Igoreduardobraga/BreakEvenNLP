@@ -555,7 +555,7 @@ def main():
     parser.add_argument('--max_len', default=20, type=int, help='Maximal length of input for fine-tuning experiments')
     parser.add_argument('--prompt_format', default=0, type=int, help='Which prompt format to use')
     parser.add_argument('--engine', default='hf', type=str, choices=['hf', 'vllm'], help='Inference engine for prompting/icl (vllm: offline vLLM, causal models only)')
-    parser.add_argument('--decoding', default='free', type=str, choices=['free', 'guided'], help='Decoding constraint (guided requires --engine vllm)')
+    parser.add_argument('--decoding', default='free', type=str, choices=['free', 'guided'], help='Decoding constraint: guided restricts the answer to the class names (vLLM structured outputs, or token masking on HF)')
     # K Fold
     parser.add_argument('--rskf_splits', default=10, type=int, help='Number of folds for RepeatedStratifiedKFold (K).')
     parser.add_argument('--rskf_repeats', default=1, type=int, help='Number of repeats for RepeatedStratifiedKFold (R).')
@@ -586,8 +586,8 @@ def main():
     DATASET = args.dataset
     ENGINE = args.engine
     DECODING = args.decoding
-    if DECODING == 'guided' and ENGINE != 'vllm':
-        parser.error("--decoding guided requires --engine vllm")
+    if DECODING == 'guided' and MODEL == 'chatgpt':
+        parser.error("--decoding guided is not available for the API model")
     if ENGINE == 'vllm' and EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
         parser.error("--engine vllm does not support instruction_tuning (in-memory tuned model)")
     BATCH_SIZE = args.batch_size

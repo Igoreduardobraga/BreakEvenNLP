@@ -1,5 +1,5 @@
 import unittest
-from evaluator import ModelEvaluator, _parse_results
+from evaluator import ModelEvaluator, _ChoiceConstraint, _parse_results
 
 
 class DummyEncoded:
@@ -460,6 +460,124 @@ class TestModelEvaluatorAPI(unittest.TestCase):
 
         logits = model(dummy_ids, dummy_mask, dummy_types)
         self.assertEqual(logits.shape, (2, 3))
+
+
+class _Encoded(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name)
+
+    def to(self, device):
+        return self
+
+
+class VocabTokenizer:
+    """Fixed vocabulary where id 0 ends the answer. With strip_start, decode
+    drops the answer's leading space as SentencePiece does."""
+    VOCAB = ['<end>', 'maybe', 'positive', 'negative', 'pos', 'itive', ' positive',
+             'Book', ' Restaurant', 'Rate', ' Book', 'x']
+
+    def __init__(self, strip_start=False):
+        self.strip_start = strip_start
+        self.eos_token_id = self.pad_token_id = 0
+
+    def __len__(self):
+        return len(self.VOCAB)
+
+    def decode(self, ids, skip_special_tokens=False):
+        text = "".join(self.VOCAB[i] for i in ids if not (skip_special_tokens and i == 0))
+        return text.lstrip() if self.strip_start else text
+
+    def batch_decode(self, sequences, skip_special_tokens=False):
+        return [self.decode(list(s), skip_special_tokens) for s in sequences]
+
+    def __call__(self, text, return_tensors=None, add_special_tokens=True, **kwargs):
+        x = self.VOCAB.index('x')
+        if isinstance(text, list):
+            return _Encoded(input_ids=[[x] for _ in text], attention_mask=[[1] for _ in text])
+        return _Encoded(input_ids=[[x]] if return_tensors else [x])
+
+
+def _ids(*tokens):
+    return [VocabTokenizer.VOCAB.index(t) for t in tokens]
+
+
+class ConstrainedGreedyModel:
+    """Emits its best-ranked token among those generate()'s constraint allows;
+    a seq2seq decoder starts from token 0."""
+
+    def __init__(self, ranking, seq2seq=False):
+        self.ranking, self.seq2seq = ranking, seq2seq
+
+    def generate(self, input_ids=None, max_new_tokens=10, prefix_allowed_tokens_fn=None, **kwargs):
+        import torch
+        outputs = []
+        for prompt in input_ids:
+            seq = [0] if self.seq2seq else list(prompt)
+            for _ in range(max_new_tokens):
+                allowed = (prefix_allowed_tokens_fn(0, torch.tensor(seq))
+                           if prefix_allowed_tokens_fn else self.ranking)
+                token = next(t for t in self.ranking if t in allowed)
+                seq.append(token)
+                if token == 0:
+                    break
+            outputs.append(seq)
+        return outputs
+
+
+class TestChoiceConstraint(unittest.TestCase):
+
+    def test_answer_stays_a_class_prefix_and_ends_only_on_a_whole_class(self):
+        c = _ChoiceConstraint(VocabTokenizer(), ['negative', 'positive'], end_ids=[0])
+        self.assertEqual(c.allowed([]), sorted(_ids('positive', 'negative', 'pos')))
+        self.assertEqual(c.allowed(_ids('pos')), _ids('itive'))
+        self.assertEqual(c.allowed(_ids('pos', 'itive')), [0])
+
+    def test_first_token_space_follows_decode(self):
+        # Byte-level BPE keeps the space of " positive", so it cannot open the
+        # answer; SentencePiece decode drops it, so it can.
+        bpe = _ChoiceConstraint(VocabTokenizer(), ['positive'], end_ids=[0])
+        spm = _ChoiceConstraint(VocabTokenizer(strip_start=True), ['positive'], end_ids=[0])
+        self.assertNotIn(_ids(' positive')[0], bpe.allowed([]))
+        self.assertIn(_ids(' positive')[0], spm.allowed([]))
+
+    def test_class_inside_a_longer_class_may_end_or_continue(self):
+        c = _ChoiceConstraint(VocabTokenizer(), ['Book', 'Book Restaurant', 'Rate Book'], end_ids=[0])
+        self.assertEqual(c.allowed(_ids('Book')), sorted([0] + _ids(' Restaurant')))
+        self.assertEqual(c.allowed(_ids('Rate')), _ids(' Book'))
+
+    def test_prefix_fn_skips_the_prompt(self):
+        import torch
+        c = _ChoiceConstraint(VocabTokenizer(), ['negative', 'positive'], end_ids=[0])
+        fn = c.prefix_allowed_tokens_fn(prompt_len=2)
+        self.assertEqual(fn(0, torch.tensor(_ids('x', 'x', 'pos'))), _ids('itive'))
+
+
+class TestGuidedDecodingHF(unittest.TestCase):
+    # The model would rather say "maybe" or " positive" than a bare class name.
+    RANKING = _ids('maybe', ' positive', 'pos', 'itive', '<end>')
+
+    def _evaluate(self, model_name, tokenizer, decoding, seq2seq=False):
+        evaluator = ModelEvaluator(model=ConstrainedGreedyModel(self.RANKING, seq2seq=seq2seq),
+                                   tokenizer=tokenizer, model_name=model_name, batch_size=2, device='cpu')
+        return evaluator.evaluate(DummyDataset(), mode='prompting', decoding=decoding)
+
+    def test_causal_guided_answers_are_class_names(self):
+        _, free, _ = self._evaluate('qwen', VocabTokenizer(), 'free')
+        self.assertEqual(free, [-1, -1])
+        _, guided, decoded = self._evaluate('qwen', VocabTokenizer(), 'guided')
+        self.assertEqual(guided, [1, 1])
+        self.assertEqual(decoded, ['positive', 'positive'])
+
+    def test_seq2seq_guided_answers_are_class_names(self):
+        tokenizer = VocabTokenizer(strip_start=True)
+        _, free, _ = self._evaluate('flan-t5', tokenizer, 'free', seq2seq=True)
+        self.assertEqual(free, [-1, -1])
+        _, guided, decoded = self._evaluate('flan-t5', tokenizer, 'guided', seq2seq=True)
+        self.assertEqual(guided, [1, 1])
+        self.assertEqual(decoded, ['positive', 'positive'])
 
 
 if __name__ == '__main__':

@@ -140,10 +140,10 @@ class TestVLLMAdapter(unittest.TestCase):
         ev.close()
         self.assertEqual(FakeLLM.last_instance.llm_engine.engine_core.shutdowns, 1)
 
-    def test_guided_on_hf_raises(self):
-        from evaluator import ModelEvaluator
+    def test_guided_on_api_raises(self):
+        from evaluator import ModelEvaluator, _APIAdapter
         e = ModelEvaluator.__new__(ModelEvaluator)
-        e.adapter = object()
+        e.adapter = _APIAdapter(client=object())
         with self.assertRaises(ValueError):
             ModelEvaluator.evaluate(e, DummyDataset(), decoding="guided")
 
