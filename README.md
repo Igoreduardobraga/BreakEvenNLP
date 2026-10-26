@@ -42,6 +42,13 @@ Useful flags: `--dry-run` lists the commands without running them, `--force` rer
 
 A single configuration can be run directly with `main.py` (see `python main.py --help`). Each run evaluates K folds of `RepeatedStratifiedKFold` (`--rskf_splits`, `--rskf_repeats`, `--rskf_seed 27`) over the concatenated splits of the dataset. All approaches are evaluated on the same stratified 1000-sample test subset of each fold (`--full_test 0 --num_labelled_test 1000`).
 
+Fine-tuning and the LoRA of instruction tuning train with a learning rate chosen per model and N band (N ≤ 100, ≤ 1000, larger) by validation loss, never by test F1. `run_lr_sweep.py` writes the choice to `ft_learning_rates.json` or `it_learning_rates.json`, which the grid reads; without a choice, IT uses 2e-4, the usual QLoRA rate. The IT sweep scores 2 folds per configuration and skips the test generations, which would cost more than the training:
+
+```bash
+uv run python run_lr_sweep.py --gpus 0                                                    # fine-tuning
+python run_lr_sweep.py --approach instruction_tuning --models qwen_9b phi_mini --gpus 0   # IT (from .venv-vllm)
+```
+
 Note that the labelled pool takes `ceil(N / classes)` samples per class, so the effective N can be slightly larger than `--num_labelled` (SNIPS, 7 classes: N=10 uses 14 samples). The plots use the effective N.
 
 ## Results and analysis
@@ -63,6 +70,7 @@ uv run python analysis/recompute_ft_subset_f1.py                    # F1 of old 
 |---|---|
 | `main.py` | One experiment: model × dataset × N over the RSKF folds, or a `--sweep` of them |
 | `run_experiments.py` | Grid orchestrator |
+| `run_lr_sweep.py` | Learning rate per model and N band for fine-tuning and IT |
 | `data.py`, `sample_pool.py` | Dataset loading, stratified label selection, ICL shots |
 | `prompter.py` | Prompt templates per model family and dataset, IT training pairs |
 | `evaluator.py` | HF, vLLM and API inference adapters and answer parsing |

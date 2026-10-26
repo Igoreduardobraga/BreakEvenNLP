@@ -2,8 +2,9 @@
 (no model weights, no GPU)."""
 import tempfile
 import unittest
+from types import SimpleNamespace
 
-from main import FT_MIN_VAL_SAMPLES, it_training_args, split_train_val, tokenize_it_pairs
+from main import FT_MIN_VAL_SAMPLES, it_training_args, it_val_loss, split_train_val, tokenize_it_pairs
 
 SEEDS = {'label_choice': 1, 'sample_choice': 2, 'sample_order': 22,
          'model_initialisation': 3, 'model_randomness': 11}
@@ -94,6 +95,40 @@ class TestITValidationSplit(unittest.TestCase):
         self.assertEqual(len(val), FT_MIN_VAL_SAMPLES)
         self.assertEqual([targets[i] for i in val].count(1), 10)
         self.assertEqual(len(set(train) | set(val)), len(targets))
+
+    def test_sweep_holdout_scores_a_small_pool_without_selecting_epochs(self):
+        # The LR sweep's small band (N=100): 10% held out only to score the
+        # final adapter, as in fine-tuning.
+        targets = [0, 1] * 50
+        train, val, select_best = split_train_val(targets, 2, seed=1, holdout_val=True)
+        self.assertFalse(select_best)
+        self.assertEqual(len(val), 10)
+        self.assertEqual(len(set(train) | set(val)), len(targets))
+
+
+class _Trainer:
+    def __init__(self, best_metric=None, eval_loss=None):
+        self.state = SimpleNamespace(best_metric=best_metric)
+        self._eval_loss = eval_loss
+        self.evaluated = False
+
+    def evaluate(self):
+        self.evaluated = True
+        return {'eval_loss': self._eval_loss}
+
+
+class TestITValLoss(unittest.TestCase):
+    """The LR sweep ranks learning rates by the loss of the adapter that is kept."""
+
+    def test_epoch_selection_reports_the_best_epoch(self):
+        trainer = _Trainer(best_metric=0.25, eval_loss=0.9)
+        self.assertEqual(it_val_loss(trainer, select_best=True), 0.25)
+        self.assertFalse(trainer.evaluated)
+
+    def test_holdout_scores_the_final_adapter(self):
+        trainer = _Trainer(eval_loss=0.4)
+        self.assertEqual(it_val_loss(trainer, select_best=False), 0.4)
+        self.assertTrue(trainer.evaluated)
 
 
 if __name__ == '__main__':

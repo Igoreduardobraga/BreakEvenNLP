@@ -93,7 +93,7 @@ def get_finetuning_batch_size(n: int) -> int:
 # na varredura). A faixa pequena varre em N=100 porque com N=50 o split de
 # validacao (10%) fica menor que o numero de classes no SNIPS. Na grade, N<250
 # treina sem early stopping com todo o N; na varredura essa faixa separa 10%
-# so para medir o modelo final (--ft_holdout_val 1).
+# so para medir o modelo final (--holdout_val 1).
 FT_LR_FILE = "ft_learning_rates.json"
 FT_LR_BANDS = [("small", 100, 100), ("medium", 1000, 500), ("large", None, 2500)]
 DEFAULT_FT_LR = 1e-5
@@ -106,7 +106,7 @@ def ft_lr_band(n: int) -> str:
     raise ValueError(n)
 
 
-def load_ft_learning_rates(path: str = FT_LR_FILE) -> Dict[str, Dict[str, float]]:
+def load_learning_rates(path: str) -> Dict[str, Dict[str, float]]:
     if not os.path.exists(path):
         return {}
     with open(path) as f:
@@ -139,7 +139,7 @@ def finetuning_experiment(ds: str, m: str, n: int, lr: float, rskf_repeats: int 
         "--results_root", results_root,
     ]
     if holdout_val:
-        cmd_args += ["--ft_holdout_val", "1"]
+        cmd_args += ["--holdout_val", "1"]
     return {
         "script_origin": "finetuning.sh",
         "experiment_type": "finetuning",
@@ -161,7 +161,7 @@ def generate_finetuning_commands() -> List[Dict[str, Any]]:
     """Grade de fine-tuning com a LR escolhida por modelo e faixa de N."""
     datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
     models = ["bert", "roberta", "deberta"]
-    chosen = load_ft_learning_rates()
+    chosen = load_learning_rates(FT_LR_FILE)
     commands = []
     missing = set()
     for ds in datasets:
@@ -531,54 +531,90 @@ def generate_prompting_modern_commands() -> List[Dict[str, Any]]:
     return commands
 
 
-def generate_it_modern_commands() -> List[Dict[str, Any]]:
-    """Gera comandos de instruction tuning para os novos modelos"""
-    commands = []
-    datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
-    models = [
-        ("qwen", "4b"),
-        ("qwen", "9b"),
-        ("phi", "mini"),
-        ("gemma", "26b"),
-    ]
+IT_MODERN_MODELS = [("qwen", "4b"), ("qwen", "9b"), ("phi", "mini"), ("gemma", "26b")]
 
+# Learning rate do LoRA dos modelos novos por modelo e faixa de N (as mesmas
+# faixas do FT), escolhida pela validacao em run_lr_sweep.py --approach
+# instruction_tuning. Sem escolha vale DEFAULT_IT_LR, a LR usual do QLoRA. Os
+# .sh em legacy/ usavam 1e-5, LR de full fine-tuning: com os poucos passos
+# dos N pequenos (65 em N=50) o adapter mal saia do zero.
+IT_LR_FILE = "it_learning_rates.json"
+DEFAULT_IT_LR = 2e-4
+
+
+def it_lr_key(m: str, m_size: str) -> str:
+    return f"{m}_{m_size}"
+
+
+def it_modern_experiment(ds: str, m: str, m_size: str, n: int, lr: float,
+                         rskf_splits: Optional[int] = None,
+                         configuration_name: Optional[str] = None,
+                         results_root: str = "results",
+                         holdout_val: bool = False,
+                         val_only: bool = False) -> Dict[str, Any]:
+    cfg = DATASET_CONFIGS[ds]
+    cfg_name = configuration_name or f"num_samples_{n}"
+    splits = rskf_splits or cfg["rskf_splits"]
+    cmd_args = [
+        sys.executable, "main.py",
+        "--experiment_name", "instruction_tuning",
+        "--configuration_name", cfg_name,
+        "--experiment_type", "instruction_tuning",
+        "--dataset", ds,
+        "--model", m,
+        "--model_size", m_size,
+        "--num_labelled", str(n),
+        *TEST_SET_ARGS,
+        *ICL_SHOTS_ARGS,
+        "--batch_size", "4",
+        "--num_epochs", "5",
+        "--lr", f"{lr:g}",
+        "--max_len", "128",
+        "--factor", "golden_model",
+        "--rskf_splits", str(splits),
+        "--rskf_repeats", "1",
+        "--rskf_seed", "27",
+        "--results_root", results_root,
+    ]
+    if holdout_val:
+        cmd_args += ["--holdout_val", "1"]
+    if val_only:
+        cmd_args += ["--it_val_only", "1"]
+    return {
+        "script_origin": "it-modern (run_experiments.py)",
+        "experiment_type": "instruction_tuning",
+        "experiment_name": "instruction_tuning",
+        "dataset": ds,
+        "model": m,
+        "model_size": m_size,
+        "num_labelled": n,
+        "lr": lr,
+        "configuration_name": cfg_name,
+        "rskf_splits": splits,
+        "rskf_repeats": 1,
+        "results_root": results_root,
+        "cmd_args": cmd_args,
+    }
+
+
+def generate_it_modern_commands() -> List[Dict[str, Any]]:
+    """Gera comandos de instruction tuning para os novos modelos, com a LR escolhida por modelo e faixa de N."""
+    datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
+    chosen = load_learning_rates(IT_LR_FILE)
+    commands = []
+    missing = set()
     for ds in datasets:
-        cfg = DATASET_CONFIGS[ds]
-        for n in cfg["sizes"]:
-            for m, m_size in models:
-                cmd_args = [
-                    sys.executable, "main.py",
-                    "--experiment_name", "instruction_tuning",
-                    "--configuration_name", f"num_samples_{n}",
-                    "--experiment_type", "instruction_tuning",
-                    "--dataset", ds,
-                    "--model", m,
-                    "--model_size", m_size,
-                    "--num_labelled", str(n),
-                    *TEST_SET_ARGS,
-                    *ICL_SHOTS_ARGS,
-                    "--batch_size", "4",
-                    "--num_epochs", "5",
-                    "--lr", "1e-5",
-                    "--max_len", "128",
-                    "--factor", "golden_model",
-                    "--rskf_splits", str(cfg["rskf_splits"]),
-                    "--rskf_repeats", "1",
-                    "--rskf_seed", "27"
-                ]
-                commands.append({
-                    "script_origin": "it-modern (run_experiments.py)",
-                    "experiment_type": "instruction_tuning",
-                    "experiment_name": "instruction_tuning",
-                    "dataset": ds,
-                    "model": m,
-                    "model_size": m_size,
-                    "num_labelled": n,
-                    "configuration_name": f"num_samples_{n}",
-                    "rskf_splits": cfg["rskf_splits"],
-                    "rskf_repeats": 1,
-                    "cmd_args": cmd_args,
-                })
+        for n in DATASET_CONFIGS[ds]["sizes"]:
+            for m, m_size in IT_MODERN_MODELS:
+                key = it_lr_key(m, m_size)
+                lr = chosen.get(key, {}).get(ft_lr_band(n))
+                if lr is None:
+                    missing.add(f"{key}/{ft_lr_band(n)}")
+                    lr = DEFAULT_IT_LR
+                commands.append(it_modern_experiment(ds, m, m_size, n, lr))
+    if missing:
+        print(f" AVISO: sem LR escolhida em {IT_LR_FILE} para {', '.join(sorted(missing))}; "
+              f"usando {DEFAULT_IT_LR:g} (rode run_lr_sweep.py --approach instruction_tuning antes).")
     return commands
 
 

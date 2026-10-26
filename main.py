@@ -123,6 +123,18 @@ def it_training_args(output_dir, factor_seeds, batch_size, learning_rate, num_ep
         **warmup_ratio_kwargs(0.1),
     )
 
+
+def it_val_loss(trainer, select_best):
+    """Validation loss of the adapter that is evaluated, the LR sweep's criterion.
+
+    With epoch selection it is the best epoch's loss, the epoch
+    load_best_model_at_end restores; with the sweep's small holdout it scores
+    the final adapter, as fine-tuning does.
+    """
+    if select_best:
+        return float(trainer.state.best_metric)
+    return float(trainer.evaluate()['eval_loss'])
+
 def compute_macro_f1(golden, predicted, failed_label=-1):
     total_samples = len(predicted)
     failed_preds = predicted.count(failed_label)
@@ -266,7 +278,8 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
     # the split is large enough to rank epochs; below that every epoch trains
     # on all N samples.
     train_idx, val_idx, select_best = split_train_val(
-        dataset.train_targets, dataset.num_classes, randomness_factor_seeds['sample_order'])
+        dataset.train_targets, dataset.num_classes, randomness_factor_seeds['sample_order'],
+        holdout_val=args.holdout_val == 1)
 
     train_pairs = [pairs[i] for i in train_idx]
     val_pairs   = [pairs[i] for i in val_idx]
@@ -282,7 +295,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
 
     seq2seq = MODEL == 'flan-t5'
     train_ds = Dataset.from_list(tokenize_it_pairs(train_pairs, tokenizer, seq2seq))
-    val_ds   = Dataset.from_list(tokenize_it_pairs(val_pairs, tokenizer, seq2seq)) if select_best else None
+    val_ds   = Dataset.from_list(tokenize_it_pairs(val_pairs, tokenizer, seq2seq)) if val_pairs else None
 
     training_args = it_training_args(investigation_path, randomness_factor_seeds, BATCH_SIZE,
                                      LEARNING_RATE, NUM_EPOCHS, seq2seq, select_best)
@@ -302,6 +315,13 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
     )
 
     trainer.train()
+    val_metrics = {'val_loss': it_val_loss(trainer, select_best)} if val_ds is not None else {}
+    if args.it_val_only:
+        # LR sweep: the choice uses only the validation loss, and the test
+        # generations would cost more than training the smaller bands.
+        return EvaluationResult({'prompting': [], 'icl': []}, {'prompting': [], 'icl': []},
+                                {'prompting': [], 'icl': []}), val_metrics
+
     # Keep the LoRA adapter unmerged: merging into 4-bit weights re-quantizes
     # them and evaluates a different model than the one that was trained.
     model = trainer.model
@@ -328,7 +348,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         with open(os.path.join(investigation_path, f'{key}_results.json'), 'w') as file:
             json.dump({'real': golden[key], 'predicted': predicted[key]}, file)
 
-    return EvaluationResult(golden, predicted, decoded, prompts=prompts, inputs=inputs)
+    return EvaluationResult(golden, predicted, decoded, prompts=prompts, inputs=inputs), val_metrics
 
 # Early stopping needs a validation split large enough to rank epochs: below
 # FT_MIN_VAL_SAMPLES (10% of N, i.e. N < 250) the model trains every epoch on
@@ -404,7 +424,7 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
     )
     loader = DatasetLoader(DATASET, BATCH_SIZE, dataset, randomness_factor_seeds['sample_order'])
     trainloader, valloader, early_stopping = make_train_val_loaders(
-        dataset, BATCH_SIZE, randomness_factor_seeds['sample_order'], holdout_val=args.ft_holdout_val == 1)
+        dataset, BATCH_SIZE, randomness_factor_seeds['sample_order'], holdout_val=args.holdout_val == 1)
     testloader  = loader.testloader()
 
     net = FT_MODELS[MODEL](dataset.n_classes, randomness_factor_seeds['model_initialisation'], randomness_factor_seeds['model_randomness'], True)
@@ -560,7 +580,8 @@ def main():
     parser.add_argument('--rskf_splits', default=10, type=int, help='Number of folds for RepeatedStratifiedKFold (K).')
     parser.add_argument('--rskf_repeats', default=1, type=int, help='Number of repeats for RepeatedStratifiedKFold (R).')
     parser.add_argument('--rskf_seed', default=27, type=int, help='Random state for RepeatedStratifiedKFold.')
-    parser.add_argument('--ft_holdout_val', default=0, type=int, help='Fine-tuning: hold out 10%% for validation even when it is too small for early stopping, only to score the final model (used by run_lr_sweep.py).')
+    parser.add_argument('--holdout_val', default=0, type=int, help='Fine-tuning and instruction tuning: hold out 10%% for validation even when it is too small to select epochs, only to score the final model (used by run_lr_sweep.py).')
+    parser.add_argument('--it_val_only', default=0, type=int, help='Instruction tuning: record only the validation loss, without evaluating on the test subset (used by run_lr_sweep.py, where the test generations would cost more than the training).')
     parser.add_argument('--results_root', default='results', type=str, help='Root directory for results (the LR sweep writes elsewhere so it never mixes with the main grid).')
     parser.add_argument('--sweep', default=None, type=str, help='JSON list of configurations (dataset, num_labelled, configuration_name, rskf_splits) to run in this process with the model loaded once.')
 
@@ -785,15 +806,19 @@ def run_configuration(config):
             f1_macro = compute_macro_f1(golden, predicted, failed_label=-1)
             metrics = {'f1_macro': float(f1_macro), **val_metrics}
         elif EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
-            eval_res = instruction_tuning_experiment(
+            eval_res, val_metrics = instruction_tuning_experiment(
                 randomness_factor_seeds, model_name, tokenizer, fold_path, train_test_indices=(train_idx, test_idx)
             )
             golden, predicted, decodeds = eval_res[0], eval_res[1], eval_res[2]
             prompts = getattr(eval_res, 'prompts', None)
             inputs = getattr(eval_res, 'inputs', None)
-            f1_prompting = compute_macro_f1(golden['prompting'], predicted['prompting'], failed_label=-1)
-            f1_icl       = compute_macro_f1(golden['icl'],       predicted['icl'],       failed_label=-1)
-            metrics = {'f1_prompting': float(f1_prompting), 'f1_macro_icl': float(f1_icl)}
+            if args.it_val_only:
+                metrics = {'f1_prompting': float('nan'), 'f1_macro_icl': float('nan')}
+            else:
+                f1_prompting = compute_macro_f1(golden['prompting'], predicted['prompting'], failed_label=-1)
+                f1_icl       = compute_macro_f1(golden['icl'],       predicted['icl'],       failed_label=-1)
+                metrics = {'f1_prompting': float(f1_prompting), 'f1_macro_icl': float(f1_icl)}
+            metrics.update(val_metrics)
         else:
             eval_model = None if MODEL == 'chatgpt' else model
             eval_tok = None if MODEL == 'chatgpt' else tokenizer
