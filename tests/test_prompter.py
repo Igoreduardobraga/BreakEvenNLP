@@ -107,8 +107,9 @@ class TestPromptFormatterZeroShot(unittest.TestCase):
     def test_llama3_format_0_native(self):
         prompter = PromptFormatter(model_name="llama3", prompt_format=0)
         prompt = prompter.format("Great movie!", dataset_name="sst2")
-        self.assertIn("<|start_header_id|>system<|end_header_id|>", prompt)
-        self.assertIn("You are an expert classifier.", prompt)
+        self.assertIn("<|start_header_id|>system<|end_header_id|>\n\nAnalyze the sentiment of the text. "
+                      "Options: 'negative', 'positive'. Do not explain. Answer only with the class name.<|eot_id|>",
+                      prompt)
         self.assertIn("<|start_header_id|>user<|end_header_id|>", prompt)
         self.assertIn("Text: Great movie!", prompt)
         self.assertIn("<|start_header_id|>assistant<|end_header_id|>", prompt)
@@ -158,9 +159,9 @@ class TestPromptFormatterFewShotICL(unittest.TestCase):
     def test_llama3_icl_native(self):
         prompter = PromptFormatter(model_name="llama3", prompt_format=0)
         prompt = prompter.format("Great movie!", dataset_name="sst2", shots=self.shots)
-        self.assertIn("<|start_header_id|>user<|end_header_id|>\n\nText: I loved it\nBased on the text above, determine the sentiment analysis. Answer:<|eot_id|>", prompt)
+        self.assertIn("<|start_header_id|>user<|end_header_id|>\n\nText: I loved it<|eot_id|>", prompt)
         self.assertIn("<|start_header_id|>assistant<|end_header_id|>\n\npositive<|eot_id|>", prompt)
-        self.assertIn("Text: Great movie!\nBased on the text above, determine the sentiment analysis. Answer:<|eot_id|>", prompt)
+        self.assertIn("<|start_header_id|>user<|end_header_id|>\n\nText: Great movie!<|eot_id|>", prompt)
 
     def test_demonstrations_are_formatted_like_the_query(self):
         # A demonstration's user turn must be exactly the query's turn for the
@@ -277,6 +278,49 @@ class TestModernModelPrompting(unittest.TestCase):
         prompt = prompter.format("Terrible plot.", dataset_name="sst2")
         self.assertIn("<|turn>user", prompt)
         self.assertIn("<|turn>model", prompt)
+
+
+class TestChatFamiliesUseTheDatasetInstruction(unittest.TestCase):
+    """Llama-3, Qwen, Phi and Gemma get the dataset's own instruction and the
+    same messages; only the chat template differs."""
+
+    FAMILIES = ("qwen", "phi", "gemma", "llama3")
+
+    def _messages(self, family, dataset, shots=None):
+        tok = MagicMock()
+        tok.apply_chat_template.side_effect = lambda messages, **kw: messages
+        return PromptFormatter(model_name=family, tokenizer=tok).format(
+            "some text", dataset_name=dataset, shots=shots)
+
+    def test_the_system_turn_is_the_dataset_instruction(self):
+        for dataset in PromptFormatter.DEFAULT_CLASSES:
+            instruction = PromptFormatter(model_name="qwen").get_task_info(dataset)["instruction"]
+            for family in self.FAMILIES:
+                with self.subTest(family=family, dataset=dataset):
+                    system, user = self._messages(family, dataset)
+                    self.assertEqual(system["role"], "system")
+                    self.assertTrue(system["content"].startswith(instruction))
+                    self.assertTrue(user["content"].endswith("some text"))
+
+    def test_boolq_asks_to_answer_the_question(self):
+        system, _ = self._messages("qwen", "boolq")
+        self.assertIn("Read the passage and answer the question with Yes or No.", system["content"])
+        self.assertNotIn("question answering", system["content"])
+
+    def test_the_four_families_get_the_same_messages(self):
+        shots = [("loved it", "positive"), ("hated it", "negative")]
+        for dataset in ("sst2", "boolq", "snips"):
+            expected = self._messages("qwen", dataset, shots)
+            for family in self.FAMILIES[1:]:
+                with self.subTest(family=family, dataset=dataset):
+                    self.assertEqual(self._messages(family, dataset, shots), expected)
+
+    def test_icl_only_adds_demonstrations_to_the_zero_shot_prompt(self):
+        zero_shot = self._messages("phi", "sst2")
+        icl = self._messages("phi", "sst2", shots=[("loved it", "positive")])
+        self.assertEqual(icl[0], zero_shot[0])
+        self.assertEqual(icl[-1], zero_shot[-1])
+        self.assertEqual([m["role"] for m in icl[1:-1]], ["user", "assistant"])
 
 
 class TestDuplicateBos(unittest.TestCase):

@@ -391,29 +391,32 @@ class PromptFormatter:
         native_str += f"<|user|>\n{messages[-1]['content']}</s>\n<|assistant|>\n"
         return native_str
 
-    def _format_llama3(self, sample: str, info: Dict[str, Any], shots: Optional[List[Tuple[str, str]]] = None) -> str:
+    def _chat_messages(self, sample: str, info: Dict[str, Any], shots: Optional[List[Tuple[str, str]]] = None) -> List[Dict[str, str]]:
+        """Messages shared by the chat families (Llama-3, Qwen, Phi, Gemma).
+
+        The system turn is the dataset's instruction, worded as Mistral gets
+        it; each demonstration is a user turn built exactly like the query's,
+        followed by its label, so ICL only adds demonstrations to the
+        zero-shot prompt.
+        """
         instruction = info["instruction"]
-        task_type = info["task_type"]
-        options_str = info["options_str"]
+        s_start = info["sentence_start"]
+        prefix = f"{s_start}: " if s_start else ""
 
-        sys_msg = (
-            f"You are an expert classifier. Your task is to determine the {task_type}. "
-            f"You must answer with exactly one of these options: {options_str}. "
-            f"Do not explain. Do not output the number, only the class name."
-        )
-
-        # Demonstrations are user turns built exactly like the query.
         def user_turn(text):
             if self.prompt_format == 0:
-                return f"Text: {text}\nBased on the text above, determine the {task_type}. Answer:"
-            return f"{text} {instruction} "
+                return f"{prefix}{text}"
+            return f"{text} {instruction}"
 
-        messages = [{"role": "system", "content": sys_msg}]
-        if shots and len(shots) > 0:
-            for s in shots:
-                messages.append({"role": "user", "content": user_turn(s[0])})
-                messages.append({"role": "assistant", "content": s[1]})
+        messages = [{"role": "system", "content": f"{instruction} Do not explain. Answer only with the class name."}]
+        for text, label in shots or []:
+            messages.append({"role": "user", "content": user_turn(text)})
+            messages.append({"role": "assistant", "content": label})
         messages.append({"role": "user", "content": user_turn(sample)})
+        return messages
+
+    def _format_llama3(self, sample: str, info: Dict[str, Any], shots: Optional[List[Tuple[str, str]]] = None) -> str:
+        messages = self._chat_messages(sample, info, shots)
 
         if hasattr(self.tokenizer, "apply_chat_template"):
             return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -424,7 +427,7 @@ class PromptFormatter:
         header_asst = "<|start_header_id|>assistant<|end_header_id|>\n\n"
         eot = "<|eot_id|>"
 
-        native_str = f"{header_sys}{sys_msg}{eot}"
+        native_str = f"{header_sys}{messages[0]['content']}{eot}"
         for i in range(1, len(messages) - 1, 2):
             native_str += f"{header_user}{messages[i]['content']}{eot}{header_asst}{messages[i+1]['content']}{eot}"
         native_str += f"{header_user}{messages[-1]['content']}{eot}{header_asst}"
@@ -459,110 +462,39 @@ class PromptFormatter:
         ]
 
     def _format_qwen(self, sample: str, info: Dict[str, Any], shots: Optional[List[Tuple[str, str]]] = None) -> str:
-        instruction = info["instruction"]
-        task_type = info["task_type"]
-        options_str = info["options_str"]
-
-        sys_msg = (
-            f"You are a helpful assistant. Your task is to determine the {task_type}. "
-            f"Answer with exactly one of these options: {options_str}. "
-            f"Do not explain. Answer only with the class name."
-        )
-
-        # Demonstrations are user turns built exactly like the query.
-        def user_turn(text):
-            if self.prompt_format == 0:
-                return f"Text: {text}\nBased on the text above, determine the {task_type}. Answer:"
-            return f"{text} {instruction} "
-
-        messages = [{"role": "system", "content": sys_msg}]
-        if shots and len(shots) > 0:
-            for s in shots:
-                messages.append({"role": "user", "content": user_turn(s[0])})
-                messages.append({"role": "assistant", "content": s[1]})
-        messages.append({"role": "user", "content": user_turn(sample)})
+        messages = self._chat_messages(sample, info, shots)
 
         if hasattr(self.tokenizer, "apply_chat_template"):
             return self.tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
 
-        native_str = f"<|im_start|>system\n{sys_msg}<|im_end|>\n"
+        native_str = f"<|im_start|>system\n{messages[0]['content']}<|im_end|>\n"
         for i in range(1, len(messages) - 1, 2):
             native_str += f"<|im_start|>user\n{messages[i]['content']}<|im_end|>\n<|im_start|>assistant\n{messages[i+1]['content']}<|im_end|>\n"
         native_str += f"<|im_start|>user\n{messages[-1]['content']}<|im_end|>\n<|im_start|>assistant\n"
         return native_str
 
     def _format_phi(self, sample: str, info: Dict[str, Any], shots: Optional[List[Tuple[str, str]]] = None) -> str:
-        instruction = info["instruction"]
-        task_type = info["task_type"]
-        options_str = info["options_str"]
-        s_start = info["sentence_start"]
-        prefix = f"{s_start}: " if s_start else ""
-
-        instruction_text = (
-            f"Determine the {task_type}. Options: {options_str}. "
-            f"Answer only with the class name."
-        )
-
-        messages = []
-        if shots and len(shots) > 0:
-            for s in shots:
-                if self.prompt_format == 0:
-                    u_content = f"{instruction_text}\n{prefix}{s[0]}"
-                else:
-                    u_content = f"{s[0]} {instruction}"
-                messages.append({"role": "user", "content": u_content})
-                messages.append({"role": "assistant", "content": s[1]})
-
-        if self.prompt_format == 0:
-            q_content = f"{instruction_text}\n{prefix}{sample}"
-        else:
-            q_content = f"{sample} {instruction}"
-        messages.append({"role": "user", "content": q_content})
+        messages = self._chat_messages(sample, info, shots)
 
         if hasattr(self.tokenizer, "apply_chat_template"):
             return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-        native_str = ""
-        for i in range(0, len(messages) - 1, 2):
+        native_str = f"<|system|>\n{messages[0]['content']}<|end|>\n"
+        for i in range(1, len(messages) - 1, 2):
             native_str += f"<|user|>\n{messages[i]['content']}<|end|>\n<|assistant|>\n{messages[i+1]['content']}<|end|>\n"
         native_str += f"<|user|>\n{messages[-1]['content']}<|end|>\n<|assistant|>\n"
         return native_str
 
     def _format_gemma(self, sample: str, info: Dict[str, Any], shots: Optional[List[Tuple[str, str]]] = None) -> str:
-        instruction = info["instruction"]
-        task_type = info["task_type"]
-        options_str = info["options_str"]
-        s_start = info["sentence_start"]
-        prefix = f"{s_start}: " if s_start else ""
-
-        instruction_text = (
-            f"Analyze the text to determine the {task_type}. Options: {options_str}. "
-            f"Answer only with the exact class name."
-        )
-
-        messages = []
-        if shots and len(shots) > 0:
-            for s in shots:
-                if self.prompt_format == 0:
-                    u_content = f"{instruction_text}\n{prefix}{s[0]}"
-                else:
-                    u_content = f"{s[0]} {instruction}"
-                messages.append({"role": "user", "content": u_content})
-                messages.append({"role": "assistant", "content": s[1]})
-
-        if self.prompt_format == 0:
-            q_content = f"{instruction_text}\n{prefix}{sample}"
-        else:
-            q_content = f"{sample} {instruction}"
-        messages.append({"role": "user", "content": q_content})
+        messages = self._chat_messages(sample, info, shots)
 
         if hasattr(self.tokenizer, "apply_chat_template"):
             return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
         # Gemma 4 turn format, matching the -it tokenizer's chat template.
-        native_str = "<bos>"
-        for i in range(0, len(messages) - 1, 2):
+        native_str = f"<bos><|turn>system\n{messages[0]['content']}<turn|>\n"
+        for i in range(1, len(messages) - 1, 2):
             native_str += f"<|turn>user\n{messages[i]['content']}<turn|>\n<|turn>model\n{messages[i+1]['content']}<turn|>\n"
         native_str += f"<|turn>user\n{messages[-1]['content']}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
         return native_str
