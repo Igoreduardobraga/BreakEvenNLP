@@ -10,6 +10,7 @@ em ICL, agora iguais aos do ICL (ICL_SHOTS_ARGS). Suporta:
 - Dry-run para visualização prévia dos comandos
 - Gestão de logs em arquivo por execução
 - Retomada inteligente (pula execuções já finalizadas)
+- --force refaz do zero, guardando os resultados anteriores em results_old/
 - Suporte a alocação de GPU (CUDA_VISIBLE_DEVICES)
 - Agrupamento de prompting/ICL: as configurações pendentes de um mesmo
   modelo rodam num único main.py --sweep, carregando o modelo uma vez
@@ -21,9 +22,10 @@ import sys
 import argparse
 import hashlib
 import json
+import shutil
 import subprocess
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from result_store import experiment_dir_name
 
@@ -594,19 +596,17 @@ SCRIPTS_MAP = {
 }
 
 
+def results_dir(exp: Dict[str, Any]) -> str:
+    """Pasta em que o main.py grava os folds do experimento."""
+    exp_dir = experiment_dir_name(exp["experiment_type"], exp["model"], exp["model_size"],
+                                  exp.get("engine", "hf"), exp.get("decoding", "free"))
+    return os.path.join(exp.get("results_root", "results"), exp["experiment_name"], exp_dir,
+                        exp["configuration_name"], exp["dataset"], "golden_model")
+
+
 def is_already_completed(exp: Dict[str, Any]) -> bool:
     """Verifica se todos os folds do experimento já possuem results.json gravado."""
-    exp_name = exp["experiment_name"]
-    exp_type = exp["experiment_type"]
-    model = exp["model"]
-    model_size = exp["model_size"]
-    cfg_name = exp["configuration_name"]
-    dataset = exp["dataset"]
-    factor = "golden_model"
-
-    exp_dir = experiment_dir_name(exp_type, model, model_size,
-                                  exp.get("engine", "hf"), exp.get("decoding", "free"))
-    target_dir = os.path.join(exp.get("results_root", "results"), exp_name, exp_dir, cfg_name, dataset, factor)
+    target_dir = results_dir(exp)
     if not os.path.isdir(target_dir):
         return False
 
@@ -619,6 +619,24 @@ def is_already_completed(exp: Dict[str, Any]) -> bool:
                 completed_count += 1
 
     return completed_count == total_expected
+
+
+def results_to_set_aside(experiments: List[Dict[str, Any]], stamp: str) -> List[Tuple[str, str]]:
+    """Origem e destino dos resultados que o --force tira do lugar antes de refazer.
+
+    Cada pasta vai para <raiz>_old/force_<stamp>/, no mesmo caminho relativo.
+    Sem os folds antigos no lugar o main.py refaz todos, e uma execução
+    interrompida continua sem --force em vez de misturar folds antigos e novos.
+    """
+    moves, seen = [], set()
+    for exp in experiments:
+        src = results_dir(exp)
+        if src in seen or not os.path.isdir(src) or not os.listdir(src):
+            continue
+        seen.add(src)
+        root = os.path.normpath(exp.get("results_root", "results"))
+        moves.append((src, os.path.join(f"{root}_old", f"force_{stamp}", os.path.relpath(src, root))))
+    return moves
 
 
 # Tipos que carregam o modelo uma vez por processo: agrupar seus comandos
@@ -795,7 +813,9 @@ def main():
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Força a execução mesmo que o resultado (results.json) já exista."
+        help="Refaz as configurações selecionadas do zero: antes de rodar, move os resultados que já "
+             "existem para results_old/force_<data-hora>/, no mesmo caminho relativo. Se a execução "
+             "parar no meio, rode de novo sem --force para continuar de onde parou."
     )
     parser.add_argument(
         "--logs-dir",
@@ -872,12 +892,23 @@ def main():
         print("\n[MODO DRY-RUN] Nenhum comando será executado.\n")
         for exp in done:
             print(f"  [JÁ CONCLUÍDO] ({exp['script_origin']}) {exp['model']} | {exp['dataset']} | N={exp['num_labelled']}")
+        if args.force:
+            for src, dst in results_to_set_aside(pending, "<data-hora>"):
+                print(f"  [SERÁ MOVIDO] {src} -> {dst}")
         for idx, job in enumerate(jobs, 1):
             print(f"\n{idx:3d}. [PENDENTE] {describe_job(job)}")
             print(f"     Comando: {' '.join(job_command(job, args.logs_dir))}")
         return
 
     # 4. Execução real
+    if args.force:
+        # Move tudo antes do primeiro job: se a execução parar no meio, o que
+        # faltar continua pendente para uma nova rodada sem --force.
+        for src, dst in results_to_set_aside(pending, time.strftime("%Y%m%d-%H%M%S")):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.move(src, dst)
+            print(f" [--force] {src} -> {dst}")
+
     success_count = 0
     failed_count = 0
 

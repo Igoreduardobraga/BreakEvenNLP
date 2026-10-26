@@ -134,5 +134,62 @@ class TestDecodingFlags(unittest.TestCase):
         self.assertTrue(all("--decoding guided" in c and "--engine" not in c for c in commands))
 
 
+class TestForce(unittest.TestCase):
+    """--force must rerun finished configurations instead of letting main.py skip their folds."""
+
+    RESULTS = os.path.join("results", "prompting", "prompting_phi_mini_vllm_guided",
+                           "num_samples_1000", "sst2", "golden_model")
+
+    def setUp(self):
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(tempfile.mkdtemp())
+        for k in range(rx.DATASET_CONFIGS["sst2"]["rskf_splits"]):
+            fold = os.path.join(self.RESULTS, f"repeat_0_fold_{k}")
+            os.makedirs(fold)
+            with open(os.path.join(fold, "results.json"), "w") as f:
+                f.write("{}")
+
+    def _run(self, *flags):
+        """Runs the orchestrator with main.py mocked; returns the jobs it ran and its output."""
+        import contextlib
+        import io
+        argv = ["run_experiments.py", "--script", "prompting-modern", "--models", "phi",
+                "--datasets", "sst2", "--engine", "vllm", "--decoding", "guided",
+                "--logs-dir", "logs", *flags]
+        out = io.StringIO()
+        with mock.patch("sys.argv", argv), contextlib.redirect_stdout(out), \
+                mock.patch.object(rx, "run_job", return_value=True) as run_job:
+            rx.main()
+        return [c.args[0] for c in run_job.call_args_list], out.getvalue()
+
+    def test_finished_configuration_is_skipped_without_force(self):
+        jobs, _ = self._run()
+        self.assertEqual(jobs, [])
+
+    def test_force_sets_old_results_aside_and_reruns(self):
+        jobs, _ = self._run("--force")
+        self.assertEqual(len(jobs), 1)
+        # main.py finds no folds to skip; the old ones are kept under results_old.
+        self.assertFalse(os.path.exists(self.RESULTS))
+        [stamp] = os.listdir("results_old")
+        self.assertTrue(stamp.startswith("force_"))
+        moved = os.path.join("results_old", stamp, os.path.relpath(self.RESULTS, "results"))
+        self.assertTrue(os.path.exists(os.path.join(moved, "repeat_0_fold_4", "results.json")))
+
+    def test_interrupted_force_resumes_without_force(self):
+        # The forced job dies before writing any fold: a plain rerun must pick
+        # the configuration up instead of counting the old folds as done.
+        self._run("--force")
+        jobs, _ = self._run()
+        self.assertEqual(len(jobs), 1)
+
+    def test_dry_run_force_only_lists_the_move(self):
+        _, out = self._run("--force", "--dry-run")
+        self.assertIn(f"[SERÁ MOVIDO] {self.RESULTS} -> ", out)
+        self.assertTrue(os.path.exists(os.path.join(self.RESULTS, "repeat_0_fold_0", "results.json")))
+        self.assertFalse(os.path.exists("results_old"))
+
+
 if __name__ == "__main__":
     unittest.main()

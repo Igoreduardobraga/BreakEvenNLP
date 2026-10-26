@@ -38,7 +38,7 @@ python run_experiments.py --script it-modern --models qwen phi gemma --decoding 
 
 `--decoding guided` restricts every answer to one of the class names: through vLLM's structured outputs for prompting and ICL, and on HF, where the instruction-tuned model is evaluated, by masking every token that would take the answer off the class names.
 
-Useful flags: `--dry-run` lists the commands without running them, `--force` reruns finished configurations, `--gpus 0` sets `CUDA_VISIBLE_DEVICES`. Prompting/ICL configurations of the same model are grouped into a single `main.py --sweep` process so the model is loaded once; `--no-group` runs one process per configuration. See `python run_experiments.py --help` for the list of scripts.
+Useful flags: `--dry-run` lists the commands without running them, `--force` reruns the selected configurations from scratch after moving their existing results to `results_old/force_<timestamp>/` (if a forced run stops midway, run it again without `--force` to resume), `--gpus 0` sets `CUDA_VISIBLE_DEVICES`. Prompting/ICL configurations of the same model are grouped into a single `main.py --sweep` process so the model is loaded once; `--no-group` runs one process per configuration. See `python run_experiments.py --help` for the list of scripts.
 
 A single configuration can be run directly with `main.py` (see `python main.py --help`). Each run evaluates K folds of `RepeatedStratifiedKFold` (`--rskf_splits`, `--rskf_repeats`, `--rskf_seed 27`) over the concatenated splits of the dataset. All approaches are evaluated on the same stratified 1000-sample test subset of each fold (`--full_test 0 --num_labelled_test 1000`).
 
