@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 
-from main import FT_MIN_VAL_SAMPLES, it_training_args, it_val_loss, split_train_val, tokenize_it_pairs
+from main import (FT_MIN_VAL_SAMPLES, IT_LORA_TARGETS, it_training_args, it_val_loss,
+                  split_train_val, tokenize_it_pairs)
 
 SEEDS = {'label_choice': 1, 'sample_choice': 2, 'sample_order': 22,
          'model_initialisation': 3, 'model_randomness': 11}
@@ -129,6 +130,44 @@ class TestITValLoss(unittest.TestCase):
         trainer = _Trainer(eval_loss=0.4)
         self.assertEqual(it_val_loss(trainer, select_best=False), 0.4)
         self.assertTrue(trainer.evaluated)
+
+
+class TestLoraCoverage(unittest.TestCase):
+    """LoRA wraps every linear projection of the decoder blocks of each family
+    (models built on the meta device, without weights)."""
+
+    def _assert_every_linear_is_tuned(self, config):
+        try:
+            from peft import LoraConfig, get_peft_model
+        except ImportError:
+            self.skipTest("peft not installed")
+        import torch
+        from transformers import AutoModelForCausalLM
+        with torch.device("meta"):
+            model = AutoModelForCausalLM.from_config(config)
+        head = model.get_output_embeddings()
+        linear = {n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear) and m is not head}
+        model = get_peft_model(model, LoraConfig(r=16, lora_alpha=32, task_type="CAUSAL_LM",
+                                                 target_modules=IT_LORA_TARGETS))
+        tuned = {n.removeprefix("base_model.model.") for n, m in model.named_modules()
+                 if hasattr(m, "lora_A") and hasattr(m, "base_layer")}
+        self.assertTrue(linear)
+        self.assertEqual(linear - tuned, set())
+
+    def test_qwen3_5_tunes_its_gated_deltanet_layers(self):
+        try:
+            from transformers import Qwen3_5TextConfig
+        except ImportError:
+            self.skipTest("transformers without Qwen 3.5")
+        config = Qwen3_5TextConfig(num_hidden_layers=4)
+        self.assertEqual(config.layer_types.count("linear_attention"), 3)
+        self._assert_every_linear_is_tuned(config)
+
+    def test_phi_and_mistral(self):
+        from transformers import MistralConfig, Phi3Config
+        for config in (Phi3Config(num_hidden_layers=2), MistralConfig(num_hidden_layers=2)):
+            with self.subTest(type(config).__name__):
+                self._assert_every_linear_is_tuned(config)
 
 
 if __name__ == '__main__':

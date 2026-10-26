@@ -42,6 +42,15 @@ def _require_it_deps():
 
 IT_MAX_LEN = 1024
 
+# LoRA targets of the causal models: every linear projection of the decoder
+# blocks. Qwen 3.5 puts three Gated DeltaNet layers (linear_attn: in_proj_qkv,
+# in_proj_z, in_proj_b, in_proj_a, out_proj) before each full-attention layer;
+# without their names LoRA reached the attention of only 8 of its 32 layers.
+# Phi-4 fuses q/k/v into qkv_proj and gate/up into gate_up_proj.
+IT_LORA_TARGETS = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'qkv_proj',
+                   'in_proj_qkv', 'in_proj_z', 'in_proj_b', 'in_proj_a', 'out_proj',
+                   'gate_proj', 'up_proj', 'down_proj', 'gate_up_proj']
+
 
 def bnb_4bit_config():
     """4-bit NF4 setup shared by prompting, ICL and IT, and matching vLLM's
@@ -244,15 +253,13 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
     if MODEL == 'flan-t5':
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name).cuda()
     elif MODEL in ['mistral', 'zephyr', 'llama3', 'qwen', 'phi', 'gemma']:
-        target_modules = ['up_proj', 'down_proj', 'gate_proj', 'k_proj', 'q_proj', 'v_proj', 'o_proj', 'qkv_proj', 'gate_up_proj']
-
         peft_config = LoraConfig(
             r=16,
             lora_alpha=32,
             lora_dropout=0.05,
             bias="none",
             task_type="CAUSAL_LM",
-            target_modules=target_modules
+            target_modules=IT_LORA_TARGETS
         )
         
         access_token = os.environ.get('HUGGINGFACE_TOKEN', None)
