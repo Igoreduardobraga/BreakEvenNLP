@@ -20,6 +20,12 @@ source .venv-vllm/bin/activate
 export VLLM_USE_FLASHINFER_SAMPLER=0
 ```
 
+Instruction tuning of Qwen3.5 also wants flash-linear-attention in `.venv-vllm`: without it transformers runs the Gated DeltaNet layers on a pure PyTorch path, about 10% slower per training step. Install it without dependencies, so torch and vLLM stay as they are:
+
+```bash
+uv pip install --python .venv-vllm/bin/python --no-deps flash-linear-attention==0.6.0 fla-core==0.6.0
+```
+
 Datasets are downloaded from the Hugging Face Hub on first use (`data.py`) and cached in `~/.cache/huggingface/datasets`; loading needs network access. Gated models (Llama, Mistral) need `huggingface-cli login`.
 
 ## Running experiments
@@ -41,6 +47,8 @@ python run_experiments.py --script it-modern --models qwen phi gemma --decoding 
 Useful flags: `--dry-run` lists the commands without running them, `--force` reruns the selected configurations from scratch after moving their existing results to `results_old/force_<timestamp>/` (if a forced run stops midway, run it again without `--force` to resume), `--gpus 0` sets `CUDA_VISIBLE_DEVICES`. Prompting/ICL configurations of the same model are grouped into a single `main.py --sweep` process so the model is loaded once; `--no-group` runs one process per configuration. See `python run_experiments.py --help` for the list of scripts.
 
 A single configuration can be run directly with `main.py` (see `python main.py --help`). Each run evaluates K folds of `RepeatedStratifiedKFold` (`--rskf_splits`, `--rskf_repeats`, `--rskf_seed 27`) over the concatenated splits of the dataset. All approaches are evaluated on the same stratified 1000-sample test subset of each fold (`--full_test 0 --num_labelled_test 1000`).
+
+Instruction tuning trains 5 epochs or 1250 optimizer steps, whichever comes first, but never less than one epoch (`IT_STEP_BUDGET` in `main.py`), for every model, Flan-T5 included. Every N up to 1000 trains all 5 epochs, N = 2500 about 2, N = 5000 about 1 and larger N exactly one, so every labelled sample is seen. With a validation split, the adapter kept is the best of 5 evenly spaced evaluations, one per epoch when every epoch trains.
 
 Fine-tuning and the LoRA of instruction tuning train with a learning rate chosen per model and N band (N ≤ 100, ≤ 1000, larger) by validation loss, never by test F1. `run_lr_sweep.py` writes the choice to `ft_learning_rates.json` or `it_learning_rates.json`, which the grid reads; without a choice, IT uses 2e-4, the usual QLoRA rate. The IT sweep scores 2 folds per configuration and skips the test generations, which would cost more than the training:
 

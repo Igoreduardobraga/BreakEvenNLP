@@ -16,6 +16,7 @@ import pickle
 import argparse
 import atexit
 import dataclasses
+import math
 import torch
 import numpy as np
 import os
@@ -41,6 +42,13 @@ def _require_it_deps():
 
 
 IT_MAX_LEN = 1024
+
+# Training budget of instruction tuning in optimizer steps, Flan-T5's former
+# cap (250 steps x 5 epochs). Every N up to 1000 still trains all its epochs
+# (1125 steps at most); larger N stop at the budget, but never before one full
+# epoch, so every labelled sample is seen. Five epochs at every N cost about
+# 126 h of training on Qwen 3.5 9B's grid alone.
+IT_STEP_BUDGET = 1250
 
 # LoRA targets of the causal models: every linear projection of the decoder
 # blocks. Qwen 3.5 puts three Gated DeltaNet layers (linear_attn: in_proj_qkv,
@@ -99,26 +107,42 @@ def warmup_ratio_kwargs(ratio):
     return {'warmup_ratio': ratio} if 'warmup_ratio' in fields else {'warmup_steps': ratio}
 
 
+def it_train_steps(n_train, batch_size, num_epochs, budget=IT_STEP_BUDGET):
+    """Optimizer steps of one instruction-tuning fold: num_epochs over the
+    training split, cut to the budget but never below one full epoch.
+
+    The count is rounded up to a multiple of num_epochs so the last of the
+    evenly spaced evaluations (it_training_args) falls on the final step.
+    """
+    per_epoch = math.ceil(n_train / batch_size)
+    steps = min(num_epochs * per_epoch, max(per_epoch, budget))
+    return math.ceil(steps / num_epochs) * num_epochs
+
+
 def it_training_args(output_dir, factor_seeds, batch_size, learning_rate, num_epochs,
-                     seq2seq, select_best):
-    """TrainingArguments of one instruction-tuning fold.
+                     seq2seq, select_best, max_steps):
+    """TrainingArguments of one instruction-tuning fold of max_steps steps
+    (it_train_steps).
 
     The Trainer reseeds every RNG when it is built: seed and data_seed carry
     the fold's model-randomness and sample-order seeds, the ones fine-tuning
-    uses for dropout and batch order. Without a validation split (select_best
-    False) every epoch trains and the final adapter is kept.
+    uses for dropout and batch order. With a validation split the best adapter
+    is picked among num_epochs evenly spaced evaluations: one per epoch when
+    every epoch trains, as many when the step budget cuts training. Without
+    one (select_best False) the final adapter is kept.
     """
     if select_best:
-        selection = dict(eval_strategy="epoch", save_strategy="epoch", save_total_limit=1,
-                         load_best_model_at_end=True, metric_for_best_model="eval_loss",
-                         greater_is_better=False)
+        every = max_steps // num_epochs
+        selection = dict(eval_strategy="steps", eval_steps=every, save_strategy="steps",
+                         save_steps=every, save_total_limit=1, load_best_model_at_end=True,
+                         metric_for_best_model="eval_loss", greater_is_better=False)
     else:
         selection = dict(eval_strategy="no", save_strategy="no")
     return TrainingArguments(
         output_dir=output_dir,
         per_device_train_batch_size=batch_size,
         learning_rate=learning_rate,
-        num_train_epochs=num_epochs,
+        max_steps=max_steps,
         logging_strategy="no",
         gradient_accumulation_steps=1,
         optim="adamw_torch" if seq2seq else "paged_adamw_8bit",
@@ -136,7 +160,7 @@ def it_training_args(output_dir, factor_seeds, batch_size, learning_rate, num_ep
 def it_val_loss(trainer, select_best):
     """Validation loss of the adapter that is evaluated, the LR sweep's criterion.
 
-    With epoch selection it is the best epoch's loss, the epoch
+    With checkpoint selection it is the best evaluation's loss, the checkpoint
     load_best_model_at_end restores; with the sweep's small holdout it scores
     the final adapter, as fine-tuning does.
     """
@@ -314,31 +338,26 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         custom_instruction=getattr(dataset, 'instructions', None)
     )
 
-    # Same validation rule as fine-tuning: the best epoch is picked only when
-    # the split is large enough to rank epochs; below that every epoch trains
-    # on all N samples.
+    # Same validation rule as fine-tuning: the best checkpoint is picked only
+    # when the split is large enough to rank checkpoints; below that the
+    # final adapter, trained on all N samples, is kept.
     train_idx, val_idx, select_best = split_train_val(
         dataset.train_targets, dataset.num_classes, randomness_factor_seeds['sample_order'],
         holdout_val=args.holdout_val == 1)
 
     train_pairs = [pairs[i] for i in train_idx]
     val_pairs   = [pairs[i] for i in val_idx]
-        
-    if MODEL == 'flan-t5':
-        steps_per_epoch_cap = 250
-        max_examples_per_epoch = steps_per_epoch_cap * 4
-        if len(train_pairs) > max_examples_per_epoch:
-            rng = np.random.default_rng(randomness_factor_seeds['sample_order'])
-            keep = rng.choice(len(train_pairs), size=max_examples_per_epoch, replace=False)
-            keep.sort()
-            train_pairs = [train_pairs[i] for i in keep]
 
     seq2seq = MODEL == 'flan-t5'
     train_ds = Dataset.from_list(tokenize_it_pairs(train_pairs, tokenizer, seq2seq))
     val_ds   = Dataset.from_list(tokenize_it_pairs(val_pairs, tokenizer, seq2seq)) if val_pairs else None
 
+    # Every model, Flan-T5 included, trains under the same step budget.
+    max_steps = it_train_steps(len(train_ds), BATCH_SIZE, NUM_EPOCHS)
+    print(f"Instruction tuning: {len(train_ds)} training samples, {max_steps} steps "
+          f"({max_steps / math.ceil(len(train_ds) / BATCH_SIZE):.2f} epochs)")
     training_args = it_training_args(investigation_path, randomness_factor_seeds, BATCH_SIZE,
-                                     LEARNING_RATE, NUM_EPOCHS, seq2seq, select_best)
+                                     LEARNING_RATE, NUM_EPOCHS, seq2seq, select_best, max_steps)
 
     # Pads input_ids/attention_mask with the tokenizer and labels with -100;
     # with the T5 model it also builds decoder_input_ids from the labels.
@@ -395,8 +414,8 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
 # Early stopping needs a validation split large enough to rank epochs: below
 # FT_MIN_VAL_SAMPLES (10% of N, i.e. N < 250) the model trains every epoch on
 # all N labelled samples, as ICL uses all N. Instruction tuning picks its best
-# epoch under the same rule. With holdout_val the LR sweep still holds out 10%
-# in that regime, only to score the final model.
+# checkpoint under the same rule. With holdout_val the LR sweep still holds
+# out 10% in that regime, only to score the final model.
 FT_VAL_RATIO = 0.1
 FT_MIN_VAL_SAMPLES = 25
 

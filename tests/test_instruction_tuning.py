@@ -1,12 +1,13 @@
-"""Loss masking, Trainer config and validation split for instruction tuning
-(no pretrained weights; only the Qwen 3.5 loss test uses a GPU, when there
-is one)."""
+"""Loss masking, step budget, Trainer config and validation split for
+instruction tuning (no pretrained weights; only the Qwen 3.5 loss test uses
+a GPU, when there is one)."""
 import tempfile
 import unittest
 from types import SimpleNamespace
 
-from main import (FT_MIN_VAL_SAMPLES, IT_LORA_TARGETS, completion_loss, it_training_args,
-                  it_val_loss, split_train_val, tokenize_it_pairs)
+from main import (FT_MIN_VAL_SAMPLES, IT_LORA_TARGETS, IT_STEP_BUDGET, completion_loss,
+                  it_train_steps, it_training_args, it_val_loss, split_train_val,
+                  tokenize_it_pairs)
 
 SEEDS = {'label_choice': 1, 'sample_choice': 2, 'sample_order': 22,
          'model_initialisation': 3, 'model_randomness': 11}
@@ -54,11 +55,32 @@ class TestTokenizeITPairs(unittest.TestCase):
         self.assertNotIn(ord('p'), ex['input_ids'])
 
 
+class TestITTrainSteps(unittest.TestCase):
+    """5 epochs, cut to IT_STEP_BUDGET steps but never below one epoch."""
+
+    def test_n_up_to_1000_trains_every_epoch(self):
+        self.assertEqual(it_train_steps(10, 4, 5), 15)
+        self.assertEqual(it_train_steps(900, 4, 5), 5 * 225)  # N=1000, 10% held out
+
+    def test_budget_cuts_the_epochs(self):
+        self.assertEqual(IT_STEP_BUDGET, 1250)
+        self.assertEqual(it_train_steps(2250, 4, 5), IT_STEP_BUDGET)  # N=2500: ~2.2 epochs
+
+    def test_large_n_still_sees_every_sample_once(self):
+        self.assertEqual(it_train_steps(9000, 4, 5), 2250)  # N=10000: one epoch
+
+    def test_steps_are_a_multiple_of_the_evaluations(self):
+        # SNIPS N=15000: 11731 samples, one epoch of 2933 steps, rounded up so
+        # the fifth evaluation falls on the last step.
+        self.assertEqual(it_train_steps(11731, 4, 5), 2935)
+
+
 class TestITTrainingArgs(unittest.TestCase):
 
     def _args(self, select_best):
         return it_training_args(tempfile.mkdtemp(), SEEDS, batch_size=4, learning_rate=1e-5,
-                                num_epochs=5, seq2seq=False, select_best=select_best)
+                                num_epochs=5, seq2seq=False, select_best=select_best,
+                                max_steps=200)
 
     def test_trainer_follows_the_fold_seeds(self):
         # The Trainer reseeds on creation; with its default seed (42) every
@@ -71,11 +93,17 @@ class TestITTrainingArgs(unittest.TestCase):
         # transformers>=5 has no warmup_ratio; the 10% must hold on both lines.
         self.assertEqual(self._args(select_best=True).get_warmup_steps(200), 20)
 
-    def test_best_epoch_is_selected_only_with_a_validation_split(self):
+    def test_best_checkpoint_is_selected_only_with_a_validation_split(self):
         best = self._args(select_best=True)
+        self.assertEqual(best.max_steps, 200)
         self.assertTrue(best.load_best_model_at_end)
-        self.assertEqual(best.eval_strategy, "epoch")
+        # num_epochs evaluations evenly spaced: once per epoch when every
+        # epoch trains.
+        self.assertEqual(best.eval_strategy, "steps")
+        self.assertEqual(best.eval_steps, 40)
+        self.assertEqual(best.save_steps, 40)
         final = self._args(select_best=False)
+        self.assertEqual(final.max_steps, 200)
         self.assertFalse(final.load_best_model_at_end)
         self.assertEqual(final.eval_strategy, "no")
         self.assertEqual(final.save_strategy, "no")
