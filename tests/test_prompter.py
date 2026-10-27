@@ -271,7 +271,7 @@ class TestModernModelPrompting(unittest.TestCase):
         self.assertIn("<|assistant|>", prompt)
 
     def test_gemma_formatting(self):
-        prompter = PromptFormatter(model_name="gemma_26b", prompt_format=0)
+        prompter = PromptFormatter(model_name="gemma_12b", prompt_format=0)
         self.assertEqual(prompter.model_family, "gemma")
 
         # Zero-shot

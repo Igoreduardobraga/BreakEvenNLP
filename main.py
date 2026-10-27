@@ -604,7 +604,9 @@ ICL_MODELS = {
     'qwen_4b': 'Qwen/Qwen3.5-4B',
     'qwen_9b': 'Qwen/Qwen3.5-9B',
     'phi_mini': 'microsoft/Phi-4-mini-instruct',
-    'gemma_26b': 'google/gemma-4-26B-A4B-it',
+    # The dense 12B: the 26B A4B MoE does not fit the 4090, since bitsandbytes
+    # leaves its experts in bf16 (43 GiB) and vLLM's bitsandbytes loader fails on them.
+    'gemma_12b': 'google/gemma-4-12B-it',
 }
 
 
@@ -630,7 +632,7 @@ def main():
     parser.add_argument('--num_labelled', default=1000, type=int)
     parser.add_argument('--num_labelled_test', default=1000, type=int)
     parser.add_argument('--model', default='flan-t5', type=str, choices=['bert', 'roberta', 'deberta', 'flan-t5', 'llama2', 'chatgpt', 'protonet', 'maml', 'fomaml', 'reptile', 'mistral', 'zephyr', 'lora_bert', 'lora_roberta', 'llama3', 'qwen', 'phi', 'gemma'])
-    parser.add_argument('--model_size', default='base', type=str, choices=['base', '8b', '4b', '9b', 'mini', '26b'])
+    parser.add_argument('--model_size', default='base', type=str, choices=['base', '8b', '4b', '9b', 'mini', '12b'])
     parser.add_argument('--lr', default=1e-5, type=float)
     parser.add_argument('--num_epochs', default=5, type=int, help='Total number of epochs to train for')
     parser.add_argument('--max_len', default=20, type=int, help='Maximal length of input for fine-tuning experiments')

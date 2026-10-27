@@ -427,7 +427,7 @@ class TestModelEvaluatorAPI(unittest.TestCase):
 
     def test_modern_models_adapter_dispatch(self):
         """Verifies ModelEvaluator resolves qwen, phi, and gemma correctly into CausalLM adapter."""
-        for m_name in ('qwen_4b', 'qwen_9b', 'phi_mini', 'gemma_26b'):
+        for m_name in ('qwen_4b', 'qwen_9b', 'phi_mini', 'gemma_12b'):
             evaluator = ModelEvaluator(
                 model=DummyCausalModel(generated_tokens_per_call=[[20]]),
                 tokenizer=DummyCausalTokenizer(),

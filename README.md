@@ -38,7 +38,7 @@ uv run python run_experiments.py --script finetuning --datasets sst2 boolq ag_ne
 
 # prompting / ICL / IT with the modern models (from .venv-vllm)
 python run_experiments.py --script prompting-modern --models qwen phi gemma --engine vllm --decoding guided
-python run_experiments.py --script icl-modern --models qwen phi gemma --model-sizes 9b mini 26b --engine vllm --decoding guided
+python run_experiments.py --script icl-modern --models qwen phi gemma --model-sizes 9b mini 12b --engine vllm --decoding guided
 python run_experiments.py --script it-modern --models qwen phi gemma --decoding guided
 ```
 

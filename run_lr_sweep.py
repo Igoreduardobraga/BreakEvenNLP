@@ -115,7 +115,7 @@ def main():
     ap.add_argument("--approach", default="finetuning", choices=list(APPROACHES))
     ap.add_argument("--models", nargs="+", default=None,
                     help="Default: todos os da abordagem (FT: bert roberta deberta; "
-                         "IT: qwen_4b qwen_9b phi_mini gemma_26b).")
+                         "IT: qwen_4b qwen_9b phi_mini gemma_12b).")
     ap.add_argument("--datasets", nargs="+", default=["sst2", "boolq", "ag_news", "snips"],
                     choices=list(DATASET_CONFIGS))
     ap.add_argument("--lrs", nargs="+", type=float, default=None,
