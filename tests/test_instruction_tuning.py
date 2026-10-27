@@ -1,11 +1,12 @@
 """Loss masking, Trainer config and validation split for instruction tuning
-(no model weights, no GPU)."""
+(no pretrained weights; only the Qwen 3.5 loss test uses a GPU, when there
+is one)."""
 import tempfile
 import unittest
 from types import SimpleNamespace
 
-from main import (FT_MIN_VAL_SAMPLES, IT_LORA_TARGETS, it_training_args, it_val_loss,
-                  split_train_val, tokenize_it_pairs)
+from main import (FT_MIN_VAL_SAMPLES, IT_LORA_TARGETS, completion_loss, it_training_args,
+                  it_val_loss, split_train_val, tokenize_it_pairs)
 
 SEEDS = {'label_choice': 1, 'sample_choice': 2, 'sample_order': 22,
          'model_initialisation': 3, 'model_randomness': 11}
@@ -130,6 +131,59 @@ class TestITValLoss(unittest.TestCase):
         trainer = _Trainer(eval_loss=0.4)
         self.assertEqual(it_val_loss(trainer, select_best=False), 0.4)
         self.assertTrue(trainer.evaluated)
+
+
+class TestCompletionLoss(unittest.TestCase):
+    """Logits only at the completion positions give the model's own loss
+    (tiny randomly initialised models on CPU)."""
+
+    PAIRS = [("ab", "Y."), ("abcdefg", "No!"), ("abcd", "Yes")]
+
+    def _batch(self):
+        import torch
+        examples = tokenize_it_pairs(self.PAIRS, _CharTokenizer(), seq2seq=False)
+        width = max(len(e['input_ids']) for e in examples)
+        return {k: torch.tensor([e[k] + [-100 if k == 'labels' else 0] * (width - len(e[k]))
+                                 for e in examples])
+                for k in ('input_ids', 'attention_mask', 'labels')}
+
+    def _assert_matches_model_loss(self, config, device='cpu'):
+        import torch
+        from transformers import AutoModelForCausalLM
+        torch.manual_seed(0)
+        model = AutoModelForCausalLM.from_config(config).to(device).eval()
+        batch = {k: v.to(device) for k, v in self._batch().items()}
+        with torch.no_grad():
+            expected = model(**batch).loss
+            loss, outputs = completion_loss(model, batch)
+            summed, _ = completion_loss(model, batch, num_items_in_batch=(batch['labels'] != -100).sum())
+        torch.testing.assert_close(loss, expected)
+        torch.testing.assert_close(summed, expected)
+        # 8 of the 10 positions predict a completion token in some row.
+        self.assertEqual(outputs.logits.shape, (3, 8, config.vocab_size))
+
+    def test_llama(self):
+        from transformers import LlamaConfig
+        self._assert_matches_model_loss(LlamaConfig(
+            vocab_size=128, hidden_size=16, intermediate_size=32, num_hidden_layers=2,
+            num_attention_heads=2, num_key_value_heads=1))
+
+    def test_qwen3_5_with_gated_deltanet_layers(self):
+        try:
+            from transformers import Qwen3_5TextConfig
+        except ImportError:
+            self.skipTest("transformers without Qwen 3.5")
+        import importlib.util
+        import torch
+        # With flash-linear-attention installed, transformers runs the DeltaNet
+        # layers on its Triton kernels, which need a GPU.
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if device == 'cpu' and importlib.util.find_spec('fla') is not None:
+            self.skipTest("flash-linear-attention kernels need a GPU")
+        self._assert_matches_model_loss(Qwen3_5TextConfig(
+            vocab_size=128, hidden_size=32, intermediate_size=64, num_hidden_layers=4,
+            num_attention_heads=2, num_key_value_heads=1, head_dim=16, linear_num_key_heads=2,
+            linear_num_value_heads=2, linear_key_head_dim=16, linear_value_head_dim=16), device)
 
 
 class TestLoraCoverage(unittest.TestCase):

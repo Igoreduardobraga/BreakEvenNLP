@@ -144,6 +144,39 @@ def it_val_loss(trainer, select_best):
         return float(trainer.state.best_metric)
     return float(trainer.evaluate()['eval_loss'])
 
+
+def completion_loss(model, inputs, num_items_in_batch=None):
+    """Causal LM loss of tokenize_it_pairs batches, with vocabulary logits
+    only at the positions that predict a completion token.
+
+    The model's own loss projects every prompt position onto the vocabulary
+    (248k tokens in Qwen 3.5) and then masks all but the answer: a BoolQ batch
+    padded to IT_MAX_LEN did not fit the 24 GB of an RTX 4090. The value is
+    the same mean cross-entropy over the completion tokens. Returns
+    (loss, outputs).
+    """
+    labels = inputs['labels']
+    # Position t predicts token t+1: keep the positions that predict a
+    # completion token in any row of the batch.
+    keep = (labels[:, 1:] != -100).any(0).nonzero().squeeze(1)
+    outputs = model(input_ids=inputs['input_ids'], attention_mask=inputs['attention_mask'],
+                    logits_to_keep=keep)
+    targets = labels[:, keep + 1]
+    loss = F.cross_entropy(outputs.logits.float().flatten(0, 1), targets.flatten(),
+                           ignore_index=-100, reduction='sum')
+    if num_items_in_batch is None:
+        num_items_in_batch = (targets != -100).sum()
+    return loss / num_items_in_batch, outputs
+
+
+class CompletionLossTrainer(Trainer):
+    """Trainer of the causal models: training and validation loss come from
+    completion_loss."""
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        loss, outputs = completion_loss(model, inputs, num_items_in_batch)
+        return (loss, outputs) if return_outputs else loss
+
 def compute_macro_f1(golden, predicted, failed_label=-1):
     total_samples = len(predicted)
     failed_preds = predicted.count(failed_label)
@@ -312,7 +345,9 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
     collator = DataCollatorForSeq2Seq(tokenizer, model=model if seq2seq else None,
                                       label_pad_token_id=-100, padding='longest')
 
-    trainer = Trainer(
+    # T5's decoder sees only the completion, so its own loss wastes nothing.
+    trainer_cls = Trainer if seq2seq else CompletionLossTrainer
+    trainer = trainer_cls(
         model=model,
         args=training_args,
         train_dataset=train_ds,
