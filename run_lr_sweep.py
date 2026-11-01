@@ -10,7 +10,8 @@ treina sem early stopping, e o val_loss do modelo final num holdout de 10%. O F1
 por ele daria ao FT uma vantagem otimista sobre os LLMs.
 
 --approach instruction_tuning aplica o mesmo criterio a LR do LoRA dos modelos
-novos, com o val_loss da resposta (a loss do treino). Como cada passo custa
+novos, com o val_loss da resposta (a loss do treino) e o melhor checkpoint, entre
+avaliacoes igualmente espacadas, no lugar do melhor epoch. Como cada passo custa
 muito mais que no FT, roda 2 folds por configuracao em vez do repeat inteiro e
 nao avalia no teste (--it_val_only): o F1 de teste nao entra na escolha, e as
 geracoes do teste, com e sem ICL, custariam mais que o treino nas faixas
@@ -42,14 +43,18 @@ from run_experiments import (DATASET_CONFIGS, FT_LR_BANDS, FT_LR_FILE, IT_LR_FIL
 IT_MODELS = {it_lr_key(m, size): (m, size) for m, size in IT_MODERN_MODELS}
 
 # Por abordagem: modelos, LRs, raiz dos resultados, logs e arquivo da escolha.
-# O LoRA varre uma ordem de grandeza acima do full fine-tuning.
+# O LoRA varre uma ordem de grandeza acima do full fine-tuning; 2e-5 entrou
+# porque 5e-5, a borda inferior, foi a escolha do Gemma 4 12B nas faixas media e
+# grande e do Qwen 3.5 9B nas faixas pequena e media.
 APPROACHES = {
     "finetuning": dict(
         models=["bert", "roberta", "deberta"], lrs=[1e-5, 2e-5, 3e-5, 5e-5],
-        results_root="results_lr_sweep", logs_dir=os.path.join("logs", "lr_sweep"), out=FT_LR_FILE),
+        results_root="results_lr_sweep", logs_dir=os.path.join("logs", "lr_sweep"), out=FT_LR_FILE,
+        criterion="min val_loss (best epoch), mean rank across datasets"),
     "instruction_tuning": dict(
-        models=list(IT_MODELS), lrs=[5e-5, 1e-4, 2e-4, 5e-4],
-        results_root="results_it_lr_sweep", logs_dir=os.path.join("logs", "it_lr_sweep"), out=IT_LR_FILE),
+        models=list(IT_MODELS), lrs=[2e-5, 5e-5, 1e-4, 2e-4, 5e-4],
+        results_root="results_it_lr_sweep", logs_dir=os.path.join("logs", "it_lr_sweep"), out=IT_LR_FILE,
+        criterion="min val_loss (best checkpoint), mean rank across datasets"),
 }
 
 # Folds por configuracao na varredura do IT: RSKF com 2 splits, repeat 0.
@@ -115,11 +120,11 @@ def main():
     ap.add_argument("--approach", default="finetuning", choices=list(APPROACHES))
     ap.add_argument("--models", nargs="+", default=None,
                     help="Default: todos os da abordagem (FT: bert roberta deberta; "
-                         "IT: qwen_4b qwen_9b phi_mini gemma_12b).")
+                         "IT: qwen_9b phi_mini gemma_12b).")
     ap.add_argument("--datasets", nargs="+", default=["sst2", "boolq", "ag_news", "snips"],
                     choices=list(DATASET_CONFIGS))
     ap.add_argument("--lrs", nargs="+", type=float, default=None,
-                    help="Default: FT 1e-5 2e-5 3e-5 5e-5; IT 5e-5 1e-4 2e-4 5e-4.")
+                    help="Default: FT 1e-5 2e-5 3e-5 5e-5; IT 2e-5 5e-5 1e-4 2e-4 5e-4.")
     ap.add_argument("--results-root", default=None)
     ap.add_argument("--logs-dir", default=None)
     ap.add_argument("--out", default=None)
@@ -171,7 +176,7 @@ def main():
     with open(args.out, "w") as f:
         json.dump({
             "approach": args.approach,
-            "criterion": "min val_loss (best epoch), mean rank across datasets",
+            "criterion": defaults["criterion"],
             "bands": [{"name": b, "max_n": mx, "probe_n": pn} for b, mx, pn in FT_LR_BANDS],
             "datasets": args.datasets,
             "lrs": args.lrs,

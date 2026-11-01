@@ -436,11 +436,10 @@ def generate_prompting_llama3_commands() -> List[Dict[str, Any]]:
 
 
 def generate_icl_modern_commands() -> List[Dict[str, Any]]:
-    """Gera comandos de ICL para os novos modelos: Qwen 3.5 4B/9B, Phi-4-mini, Gemma 4 12B"""
+    """Gera comandos de ICL para os novos modelos: Qwen 3.5 9B, Phi-4-mini, Gemma 4 12B"""
     commands = []
     datasets = ["boolq", "ag_news", "snips", "sst2", "mrpc", "cola", "trec", "db_pedia"]
     models = [
-        ("qwen", "4b"),
         ("qwen", "9b"),
         ("phi", "mini"),
         ("gemma", "12b"),
@@ -484,11 +483,10 @@ def generate_icl_modern_commands() -> List[Dict[str, Any]]:
 
 
 def generate_prompting_modern_commands() -> List[Dict[str, Any]]:
-    """Gera comandos de prompting zero-shot para os novos modelos: Qwen 3.5 4B/9B, Phi-4-mini, Gemma 4 12B"""
+    """Gera comandos de prompting zero-shot para os novos modelos: Qwen 3.5 9B, Phi-4-mini, Gemma 4 12B"""
     commands = []
     datasets = ["ag_news", "snips", "boolq", "sst2", "mrpc", "cola", "trec", "db_pedia"]
     models = [
-        ("qwen", "4b"),
         ("qwen", "9b"),
         ("phi", "mini"),
         ("gemma", "12b"),
@@ -531,7 +529,7 @@ def generate_prompting_modern_commands() -> List[Dict[str, Any]]:
     return commands
 
 
-IT_MODERN_MODELS = [("qwen", "4b"), ("qwen", "9b"), ("phi", "mini"), ("gemma", "12b")]
+IT_MODERN_MODELS = [("qwen", "9b"), ("phi", "mini"), ("gemma", "12b")]
 
 # Learning rate do LoRA dos modelos novos por modelo e faixa de N (as mesmas
 # faixas do FT), escolhida pela validacao em run_lr_sweep.py --approach

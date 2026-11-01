@@ -67,8 +67,8 @@ class TestItLearningRate(unittest.TestCase):
         self.assertEqual(lr[("qwen", "9b", "sst2", 50)]["lr"], 5e-4)
         self.assertEqual(float(_flag(lr[("qwen", "9b", "sst2", 50)], "--lr")), 5e-4)
         self.assertEqual(lr[("qwen", "9b", "sst2", 500)]["lr"], rx.DEFAULT_IT_LR)  # band not chosen
-        self.assertEqual(lr[("qwen", "4b", "sst2", 50)]["lr"], rx.DEFAULT_IT_LR)  # 4B is its own key
-        self.assertEqual(lr[("phi", "mini", "sst2", 50)]["lr"], rx.DEFAULT_IT_LR)
+        self.assertEqual(lr[("phi", "mini", "sst2", 50)]["lr"], rx.DEFAULT_IT_LR)  # each model is its own key
+        self.assertNotIn(("qwen", "4b", "sst2", 50), lr)  # dropped from the modern grid
 
     def test_without_a_sweep_lora_does_not_use_the_full_fine_tuning_rate(self):
         with mock.patch.object(rx, "load_learning_rates", return_value={}):
