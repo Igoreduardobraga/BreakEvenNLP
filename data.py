@@ -128,7 +128,8 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
             f"Premise: {p}; Hypothesis: {h}"
             for p, h in zip(data['sentence1'].tolist(), data['sentence2'].tolist())
         ]
-        classes = ['not entailment', 'entailment']
+        # GLUE's label order: 0 = entailment, 1 = not_entailment.
+        classes = ['entailment', 'not entailment']
         targets = data['label'].tolist()
         return tuple(texts), tuple(targets), tuple(classes)
 
@@ -150,7 +151,8 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
         dataset = load_dataset("CogComp/trec", revision="refs/convert/parquet")
         data = pd.concat([pd.DataFrame(dataset['train']),
                           pd.DataFrame(dataset['test'])])
-        classes = ['Expression', 'Entity', 'Description', 'Human', 'Location', 'Number']
+        # coarse_label: ABBR, ENTY, DESC, HUM, LOC, NUM.
+        classes = ['Abbreviation', 'Entity', 'Description', 'Human', 'Location', 'Number']
         texts   = data['text'].tolist()
         targets = data['coarse_label'].tolist()
         return tuple(texts), tuple(targets), tuple(classes)
@@ -159,7 +161,9 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
         dataset = load_dataset('fancyzhx/ag_news')
         data = pd.concat([pd.DataFrame(dataset['train']),
                           pd.DataFrame(dataset['test'])])
-        classes = ['World', 'Sports', 'Business', 'Science and Technology']
+        # The dataset's own label names. "Science and Technology" lost most of
+        # the class (tech-company news) to "Business" in zero-shot.
+        classes = ['World', 'Sports', 'Business', 'Sci/Tech']
         texts   = data['text'].tolist()
         targets = data['label'].tolist()
         return tuple(texts), tuple(targets), tuple(classes)

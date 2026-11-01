@@ -46,14 +46,34 @@ class TestPromptFormatterCatalog(unittest.TestCase):
     def test_trec_task_info(self):
         info = self.prompter.get_task_info("trec")
         self.assertEqual(info["task_type"], "question classification")
+        self.assertEqual(info["classes"][0], "Abbreviation")  # coarse_label 0 is ABBR
+
+    def test_rte_follows_glue_label_order(self):
+        info = self.prompter.get_task_info("rte")
+        self.assertEqual(info["classes"], ["entailment", "not entailment"])  # GLUE: 0 = entailment
 
     def test_ag_news_task_info(self):
         info = self.prompter.get_task_info("ag_news")
         self.assertEqual(info["task_type"], "news classification")
+        self.assertEqual(info["classes"], ["World", "Sports", "Business", "Sci/Tech"])
+        self.assertIn("'Sci/Tech'", info["instruction"])
 
     def test_snips_task_info(self):
         info = self.prompter.get_task_info("snips")
         self.assertEqual(info["task_type"], "intent detection")
+
+    def test_snips_instruction_describes_each_intent(self):
+        info = self.prompter.get_task_info("snips")
+        self.assertTrue(info["instruction"].startswith(
+            "Identify the intent of the user command. Options: 'Playlist', 'Weather',"))
+        for name, meaning in PromptFormatter.SNIPS_INTENTS.items():
+            self.assertIn(f"'{name}': {meaning}", info["instruction"])
+        self.assertEqual(set(PromptFormatter.SNIPS_INTENTS), set(PromptFormatter.DEFAULT_CLASSES["snips"]))
+
+    def test_snips_names_without_a_description_get_none(self):
+        info = self.prompter.get_task_info("snips", classes=["AddToPlaylist", "GetWeather"])
+        self.assertEqual(info["instruction"],
+                         "Identify the intent of the user command. Options: 'AddToPlaylist', 'GetWeather'.")
 
     def test_db_pedia_task_info(self):
         info = self.prompter.get_task_info("db_pedia")
