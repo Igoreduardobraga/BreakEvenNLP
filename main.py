@@ -50,6 +50,13 @@ IT_MAX_LEN = 1024
 # 126 h of training on Qwen 3.5 9B's grid alone.
 IT_STEP_BUDGET = 1250
 
+# Prompts per generate() call when HF evaluates a causal model, as instruction
+# tuning evaluates its adapter. On the 4090, 16 prompts (at most
+# _CausalLMAdapter.MAX_BATCH_TOKENS padded tokens per call) evaluate the IT
+# grid 1.6-1.8x faster than one at a time: 2-5x for zero-shot, less for the
+# long ICL prompts, whose prefill is already compute-bound.
+HF_EVAL_BATCH_SIZE = 16
+
 # LoRA targets of the causal models: every linear projection of the decoder
 # blocks. Qwen 3.5 puts three Gated DeltaNet layers (linear_attn: in_proj_qkv,
 # in_proj_z, in_proj_b, in_proj_a, out_proj) before each full-attention layer;
@@ -272,7 +279,7 @@ def prompt_icl_experiment(randomness_factor_seeds, model, tokenizer, experiment=
             model=model,
             tokenizer=tokenizer,
             model_name=MODEL,
-            batch_size=BATCH_SIZE if MODEL == 'flan-t5' else 1,
+            batch_size=BATCH_SIZE if MODEL == 'flan-t5' else HF_EVAL_BATCH_SIZE,
             prompt_format=PROMPT_FORMAT,
             max_new_tokens=10,
             generation_config=getattr(model, 'generation_config', None) if model is not None else None,

@@ -209,6 +209,12 @@ class _Seq2SeqAdapter:
 class _CausalLMAdapter:
     """Internal adapter for causal autoregressive models (LLaMA-2, LLaMA-3, Mistral, Zephyr)."""
 
+    # Padded prompt tokens per generate() call: up to batch_size prompts, fewer
+    # when they are long (BoolQ's ICL prompts reach ~5k tokens). Past ~8k tokens
+    # the prefill is already compute-bound on the 4090, so a larger call only
+    # adds padding, and Gemma 4's attention runs out of memory at 16k.
+    MAX_BATCH_TOKENS = 8192
+
     def __init__(self, model, tokenizer, model_family, prompter=None, batch_size=1, prompt_format=0, max_new_tokens=10, generation_config=None, device='cuda'):
         self.model = model
         self.tokenizer = tokenizer
@@ -245,7 +251,23 @@ class _CausalLMAdapter:
         custom_inst = getattr(dataset, 'instructions', None)
         constraint = _ChoiceConstraint(self.tokenizer, dataset.classes, terminators) if decoding == 'guided' else None
 
+        gen_kwargs = {
+            'max_new_tokens': self.max_new_tokens,
+            'do_sample': False,
+        }
+        if terminators:
+            gen_kwargs['eos_token_id'] = terminators if len(terminators) > 1 else terminators[0]
+
+        if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
+            gen_kwargs['pad_token_id'] = self.tokenizer.pad_token_id
+        elif hasattr(self.tokenizer, 'eos_token_id') and self.tokenizer.eos_token_id is not None:
+            gen_kwargs['pad_token_id'] = self.tokenizer.eos_token_id
+
+        if self.generation_config is not None:
+            gen_kwargs['generation_config'] = self.generation_config
+
         for data, labels in dataset.batch_data_for_evaluation(self.batch_size):
+            batch_prompts = []
             for sample in data:
                 formatted = self.prompter.format(
                     sample,
@@ -261,62 +283,64 @@ class _CausalLMAdapter:
                     prompt_str = self.tokenizer.apply_chat_template(formatted, tokenize=False, add_generation_prompt=True)
                 else:
                     prompt_str = str(formatted)
+                batch_prompts.append(prompt_str)
 
-                inputs.append(sample)
-                prompts.append(prompt_str)
-
-                inputs_tok = self.tokenizer(prompt_str, return_tensors="pt", padding=True, truncation=True)
-                if hasattr(inputs_tok, 'to'):
-                    inputs_tok = inputs_tok.to(self.device)
-
-                if hasattr(inputs_tok, 'input_ids'):
-                    input_len = inputs_tok.input_ids.shape[-1] if hasattr(inputs_tok.input_ids, 'shape') else len(inputs_tok.input_ids[0])
-                    input_kwargs = {'input_ids': inputs_tok.input_ids}
-                    if hasattr(inputs_tok, 'attention_mask'):
-                        input_kwargs['attention_mask'] = inputs_tok.attention_mask
-                else:
-                    input_len = inputs_tok.shape[-1] if hasattr(inputs_tok, 'shape') else len(inputs_tok[0])
-                    input_kwargs = {'input_ids': inputs_tok}
-
-                gen_kwargs = {
-                    'max_new_tokens': self.max_new_tokens,
-                    'do_sample': False,
-                }
-                if terminators:
-                    gen_kwargs['eos_token_id'] = terminators if len(terminators) > 1 else terminators[0]
-
-                if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
-                    gen_kwargs['pad_token_id'] = self.tokenizer.pad_token_id
-                elif hasattr(self.tokenizer, 'eos_token_id') and self.tokenizer.eos_token_id is not None:
-                    gen_kwargs['pad_token_id'] = self.tokenizer.eos_token_id
-
-                if constraint is not None:
-                    gen_kwargs['prefix_allowed_tokens_fn'] = constraint.prefix_allowed_tokens_fn(input_len)
-
-                if self.generation_config is not None:
-                    gen_kwargs['generation_config'] = self.generation_config
-
-                out = self.model.generate(**input_kwargs, **gen_kwargs)
-
-                if hasattr(out, '__getitem__'):
-                    raw_gen = out[0]
-                    if hasattr(raw_gen, '__getitem__'):
-                        new_tokens = raw_gen[input_len:]
-                    else:
-                        new_tokens = raw_gen
-                else:
-                    new_tokens = out
-
-                decoded_text = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+            inputs.extend(data)
+            prompts.extend(batch_prompts)
+            for decoded_text in self._generate(batch_prompts, gen_kwargs, constraint):
                 decoded_clean = decoded_text.replace('.', '').replace('"', '').strip()
-
                 decodeds.append(decoded_clean)
-                pred = _parse_results(decoded_clean, dataset.classes)
-                predicted.append(pred)
+                predicted.append(_parse_results(decoded_clean, dataset.classes))
 
             golden.extend(labels)
 
         return EvaluationResult(golden, predicted, decodeds, prompts=prompts, inputs=inputs)
+
+    def _generate(self, prompt_strs, gen_kwargs, constraint):
+        """Answers in prompt order. Each prompt is tokenized alone, as at batch
+        size 1, and the rows are left-padded, so batching only adds positions
+        the attention mask hides."""
+        rows = []
+        for prompt_str in prompt_strs:
+            encoded = self.tokenizer(prompt_str, return_tensors="pt", padding=True, truncation=True)
+            ids = (encoded.input_ids if hasattr(encoded, 'input_ids') else encoded)[0]
+            rows.append(ids.tolist() if hasattr(ids, 'tolist') else list(ids))
+
+        answers, chunk = [], []
+        for row in rows:
+            width = max(len(r) for r in chunk + [row])
+            if chunk and (len(chunk) + 1) * width > self.MAX_BATCH_TOKENS:
+                answers.extend(self._generate_rows(chunk, gen_kwargs, constraint))
+                chunk = []
+            chunk.append(row)
+        if chunk:
+            answers.extend(self._generate_rows(chunk, gen_kwargs, constraint))
+        return answers
+
+    def _generate_rows(self, rows, gen_kwargs, constraint):
+        import torch
+        width = max(len(r) for r in rows)
+        pad_id = gen_kwargs.get('pad_token_id')
+        pad_id = (pad_id[0] if isinstance(pad_id, list) else pad_id) or 0
+        input_ids = torch.tensor([[pad_id] * (width - len(r)) + r for r in rows], device=self.device)
+        attention_mask = torch.tensor([[0] * (width - len(r)) + [1] * len(r) for r in rows], device=self.device)
+        kwargs = dict(gen_kwargs)
+        if constraint is not None:
+            # Left padding puts every answer right after the same width.
+            kwargs['prefix_allowed_tokens_fn'] = constraint.prefix_allowed_tokens_fn(width)
+        try:
+            out = self.model.generate(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+        except torch.cuda.OutOfMemoryError:
+            if len(rows) == 1:
+                raise
+            out = None
+        if out is None:
+            # Retried outside the except block, so the failed call's tensors are freed.
+            torch.cuda.empty_cache()
+            half = len(rows) // 2
+            return (self._generate_rows(rows[:half], gen_kwargs, constraint)
+                    + self._generate_rows(rows[half:], gen_kwargs, constraint))
+        return [self.tokenizer.decode(seq[width:], skip_special_tokens=True).strip() for seq in out]
 
 
 class _APIAdapter:

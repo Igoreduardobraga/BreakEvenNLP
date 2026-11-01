@@ -1,5 +1,7 @@
 import unittest
-from evaluator import ModelEvaluator, _ChoiceConstraint, _parse_results
+from types import SimpleNamespace
+
+from evaluator import ModelEvaluator, _CausalLMAdapter, _ChoiceConstraint, _parse_results
 
 
 class DummyEncoded:
@@ -405,7 +407,8 @@ class TestModelEvaluatorAPI(unittest.TestCase):
             tokenizer=DummyCausalTokenizer(),
             model_name='llama3',
             batch_size=1,
-            prompt_format=0
+            prompt_format=0,
+            device='cpu'
         )
 
         res = evaluator.evaluate(dataset, mode='prompting')
@@ -578,6 +581,102 @@ class TestGuidedDecodingHF(unittest.TestCase):
         _, guided, decoded = self._evaluate('flan-t5', tokenizer, 'guided', seq2seq=True)
         self.assertEqual(guided, [1, 1])
         self.assertEqual(decoded, ['positive', 'positive'])
+
+
+class CharTensorTokenizer:
+    """One id per ASCII character, returned as tensors like a HF tokenizer;
+    id 0 pads and ends the answer."""
+    pad_token_id = eos_token_id = 0
+
+    def __call__(self, text, return_tensors=None, **kwargs):
+        import torch
+        ids = torch.tensor([[ord(c) % 128 for c in text]])
+        return SimpleNamespace(input_ids=ids, attention_mask=torch.ones_like(ids))
+
+    def convert_tokens_to_ids(self, token):
+        return None
+
+    def decode(self, ids, skip_special_tokens=False):
+        return "".join(chr(int(i)) for i in ids if not (skip_special_tokens and int(i) == 0))
+
+
+class FirstTokenModel:
+    """Answers each row with its first prompt token and records the batch
+    shapes; batches above max_rows run out of memory."""
+
+    def __init__(self, max_rows=None):
+        self.max_rows = max_rows
+        self.shapes = []
+
+    def generate(self, input_ids=None, attention_mask=None, **kwargs):
+        import torch
+        self.shapes.append(tuple(input_ids.shape))
+        if self.max_rows and len(input_ids) > self.max_rows:
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+        first = torch.stack([row[mask.bool()][0] for row, mask in zip(input_ids, attention_mask)])
+        return torch.cat([input_ids, first[:, None]], dim=1)
+
+
+class TestCausalBatching(unittest.TestCase):
+    """HF evaluation of causal models (instruction tuning's tuned adapter)
+    generates several prompts per call, left-padded."""
+
+    GEN = {'max_new_tokens': 1, 'do_sample': False, 'pad_token_id': 0}
+    PROMPTS = ["a", "bbbb", "cc", "dddddd"]
+
+    def _adapter(self, model, budget=None):
+        adapter = _CausalLMAdapter(model, CharTensorTokenizer(), 'qwen', batch_size=4, device='cpu')
+        if budget:
+            adapter.MAX_BATCH_TOKENS = budget
+        return adapter
+
+    def test_long_prompts_split_under_the_token_budget(self):
+        model = FirstTokenModel()
+        answers = self._adapter(model, budget=8)._generate(self.PROMPTS, self.GEN, None)
+        self.assertEqual(answers, ["a", "b", "c", "d"])
+        self.assertEqual(model.shapes, [(2, 4), (1, 2), (1, 6)])
+
+    def test_out_of_memory_halves_the_batch(self):
+        model = FirstTokenModel(max_rows=1)
+        answers = self._adapter(model, budget=64)._generate(self.PROMPTS, self.GEN, None)
+        self.assertEqual(answers, ["a", "b", "c", "d"])
+        self.assertEqual([rows for rows, _ in model.shapes], [4, 2, 1, 1, 2, 1, 1])
+
+    def _assert_batches_match_one_at_a_time(self, config, device='cpu'):
+        import torch
+        from transformers import AutoModelForCausalLM
+        torch.manual_seed(0)
+        model = AutoModelForCausalLM.from_config(config).to(device).eval()
+        texts = ["Great.", "A long and winding review of a film that never quite finds its footing.",
+                 "Dull", "Funny, warm and smart: the best comedy of the year, by a wide margin."]
+        dataset = DummyDataset(texts=texts, targets=[1, 0, 0, 1])
+        decoded = {}
+        for batch_size in (1, 4):
+            evaluator = ModelEvaluator(model=model, tokenizer=CharTensorTokenizer(), model_name='qwen',
+                                       batch_size=batch_size, device=device)
+            decoded[batch_size] = evaluator.evaluate(dataset, mode='icl', decoding='free')[2]
+        self.assertEqual(decoded[4], decoded[1])
+
+    def test_llama_answers_match_one_at_a_time(self):
+        from transformers import LlamaConfig
+        self._assert_batches_match_one_at_a_time(LlamaConfig(
+            vocab_size=128, hidden_size=32, intermediate_size=64, num_hidden_layers=2,
+            num_attention_heads=2, num_key_value_heads=1))
+
+    def test_qwen3_5_gated_deltanet_ignores_the_left_padding(self):
+        try:
+            from transformers import Qwen3_5TextConfig
+        except ImportError:
+            self.skipTest("transformers without Qwen 3.5")
+        import importlib.util
+        import torch
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if device == 'cpu' and importlib.util.find_spec('fla') is not None:
+            self.skipTest("flash-linear-attention kernels need a GPU")
+        self._assert_batches_match_one_at_a_time(Qwen3_5TextConfig(
+            vocab_size=128, hidden_size=32, intermediate_size=64, num_hidden_layers=4,
+            num_attention_heads=2, num_key_value_heads=1, head_dim=16, linear_num_key_heads=2,
+            linear_num_value_heads=2, linear_key_head_dim=16, linear_value_head_dim=16), device)
 
 
 if __name__ == '__main__':
