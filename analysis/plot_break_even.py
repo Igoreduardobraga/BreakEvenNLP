@@ -1,30 +1,37 @@
 #!/usr/bin/env python3
-"""Grafo principal da POC II: N (labelled samples, eixo x log) x F1-macro
-medio +- desvio entre folds (banda), uma linha por (modelo x abordagem),
-um painel por dataset + figura combinada.
+"""Break-even plots: labelled samples N (log x axis) against the mean macro-F1
+across folds (band: +- std), one line per model x approach, one panel per
+dataset plus a combined figure.
 
-Regras assentadas (preservadas):
-- Metrica: finetuning/prompting/icl -> f1_macro. O IT vira duas linhas:
-  instruction_tuning -> f1_prompting (zero-shot, o formato em que e treinado)
-  e instruction_tuning_icl -> f1_macro_icl (o mesmo modelo avaliado com ICL).
-  Sem forja: nenhum ajuste artificial (+/- offsets) copiado do script da POC I.
-- Rotulo interno da linha: (modelo x abordagem), ex. mistral/it.
-- Folds incompletos: warning no log (moda de n_folds por dataset).
-- Saida: CSV agregado em analysis/figures/ + PNGs.
+Rules:
+- Metric: finetuning, prompting and icl use f1_macro. Instruction tuning gives
+  two lines: instruction_tuning -> f1_prompting (zero-shot, the format it is
+  trained on) and instruction_tuning_icl -> f1_macro_icl (the same model
+  evaluated with ICL). No artificial adjustments (offsets) to any curve.
+- Line key: model[@variant]/approach, e.g. qwen@vllm-guided/icl.
+- Incomplete folds: a warning for each point whose fold count differs from the
+  dataset's mode.
+- Output: aggregated CSV and PNGs in analysis/figures/.
 
-Estilo herdado de plotar_grafico_atualizado.py (POC I):
-- Y em % (x100, clip 0-100, ylim 0-105), ylabel "F1 macro (%)".
-- marker "o" markersize 4, fill_between alpha 0.15.
-- xscale log, xlabel "Amostras rotuladas (log)", titulo DATASET.upper().
-- grid both "--" alpha 0.3, legenda lower right.
-- Break-even: intersecao FT vs cada outra abordagem em espaco log
-  (geomspace 5000), vlines cinza + marcador X, filtro bx > 10.
-- Figura combinada 2-colunas (14x10 p/ 2x2) + PNGs individuais 9x6.
+Style (as in the POC I plots):
+- Y in % (clipped to 0-100, ylim 0-105), log x axis, dashed grid, legend at the
+  lower right, title DATASET.
+- Break-even: first point where the best fine-tuning line rises above the best
+  line of each other approach, interpolated in log space; grey vertical line
+  and X marker; crossings at N <= 10 are ignored.
+- Combined figure with 2 columns plus one 9x6 PNG per dataset.
 
-Uso:
+Without --best-only every model is drawn: colour = approach, dash and marker =
+model. The best model of each approach is a thick solid line with a star in
+the legend; the others are thin and faded. It also writes
+break_even_by_model[_<dataset>].png, one column per LLM against the best
+fine-tuning. With --best-only there is one line per approach, as in the POC I;
+use another --out-dir so the two modes do not overwrite each other's PNGs.
+
+Usage:
     .venv/bin/python analysis/plot_break_even.py [--results-dir results_legacy]
         [--out-dir analysis/figures] [--datasets sst2 boolq]
-        [--best-only] [--no-combined] [--no-single]
+        [--best-only] [--no-combined] [--no-single] [--no-by-model]
 """
 import argparse
 import logging
@@ -84,7 +91,7 @@ BREAK_EVEN_CONFIG = {
     "instruction_tuning_icl": {"color": "gray", "linestyle": (0, (3, 1, 1, 1, 1, 1))},
 }
 
-# Ordem fixa da legenda por abordagem.
+# Legend order by approach.
 APPROACH_ORDER = {
     "finetuning": 0,
     "icl": 1,
@@ -94,7 +101,7 @@ APPROACH_ORDER = {
     "instruction_tuning_icl": 4,
 }
 
-# Cor fixa por abordagem (C0-C4 do ciclo tab10).
+# Fixed colour per approach (tab10 C0-C4).
 APPROACH_COLOR = {
     "finetuning": "#1f77b4",
     "icl": "#ff7f0e",
@@ -104,7 +111,7 @@ APPROACH_COLOR = {
     "instruction_tuning_icl": "#9467bd",
 }
 
-# Estilo por modelo (ordem fixa p/ estabilidade entre paineis/datasets).
+# Style per model; the fixed order keeps it stable across panels and datasets.
 MODEL_ORDER = ("bert", "roberta", "flan-t5", "llama2", "llama3", "mistral",
                "zephyr", "qwen", "phi", "gemma", "deberta", "chatgpt")
 STYLE_COMBOS = (("-", "o"), ("--", "s"), (":", "D"), ("-.", "^"),
@@ -112,7 +119,7 @@ STYLE_COMBOS = (("-", "o"), ("--", "s"), (":", "D"), ("-.", "^"),
 
 
 def style_for(line: str):
-    """(cor, linestyle, marker): cor pela abordagem, estilo pelo modelo."""
+    """(colour, linestyle, marker): colour from the approach, style from the model."""
     exp, model = exp_of(line), model_of(line)
     color = APPROACH_COLOR.get(exp, "#7f7f7f")
     try:
@@ -159,12 +166,12 @@ def exp_of(line: str) -> str:
 
 
 def model_of(line: str) -> str:
-    """Modelo sem o sufixo de variante: 'qwen@vllm-guided/icl' -> 'qwen'."""
+    """Model without the variant suffix: 'qwen@vllm-guided/icl' -> 'qwen'."""
     return line.split("/", 1)[0].partition("@")[0]
 
 
 def variant_of(engine, decoding) -> str:
-    """'' para hf/free (padrao); senao '@vllm-guided' etc."""
+    """'' for hf/free (the default), else '@vllm-guided' etc."""
     parts = [str(engine)] if engine != "hf" else []
     if decoding != "free":
         parts.append(str(decoding))
@@ -173,10 +180,10 @@ def variant_of(engine, decoding) -> str:
 
 @lru_cache(maxsize=None)
 def train_fold_class_counts(ds: str):
-    """Amostras por classe num fold de treino (o RSKF estratificado varia +-1)."""
+    """Samples per class in a training fold (the stratified RSKF varies by +-1)."""
     try:
         _, targets, classes = load_text_and_targets(ds, 0)
-    except Exception as e:  # sem rede/cache: cai na formula sem teto
+    except Exception as e:  # no network/cache: fall back to the formula without a cap
         log.warning("%s: contagem por classe indisponivel (%s); N efetivo sem teto", ds, e)
         return None
     splits = DATASET_CONFIGS.get(ds, {}).get("rskf_splits", 5)
@@ -197,7 +204,7 @@ def load_all(results_dir: Path) -> pd.DataFrame:
         except Exception as e:
             log.warning("ignorando %s: %s", p, e)
             continue
-        # tag de modelo vinda do diretorio {exp}_{modelo}_{size}
+        # model tag from the {exp}_{model}_{size} directory
         try:
             exp_dir = p.parents[3].name
         except IndexError:
@@ -208,15 +215,15 @@ def load_all(results_dir: Path) -> pd.DataFrame:
     if not frames:
         raise SystemExit(f"nenhum summary.parquet em {results_dir}")
     full = pd.concat(frames, ignore_index=True)
-    # Cada fold de IT avalia o modelo treinado em zero-shot e com ICL; a
-    # avaliacao com ICL vira a abordagem instruction_tuning_icl.
+    # Each IT fold evaluates the trained model zero-shot and with ICL; the ICL
+    # evaluation becomes the instruction_tuning_icl approach.
     it_icl = full[full["experiment_type"].isin(IT_TYPES)].assign(experiment_type="instruction_tuning_icl")
     full = pd.concat([full, it_icl], ignore_index=True)
-    # O eixo x usa o N efetivo: o pool seleciona ceil(N/classes) por classe e
-    # uma classe que acaba contribui so com o que tem (ex.: SNIPS N=10 -> 14,
-    # BoolQ N=10000 -> ~9300). Resultados novos gravam o valor real por fold
-    # (num_labelled_effective); os antigos usam a estimativa por classe.
-    # O N nominal fica em n_nominal.
+    # The x axis uses the effective N: the pool takes ceil(N/classes) per class
+    # and a class that runs out contributes only what it has (SNIPS N=10 -> 14,
+    # BoolQ N=10000 -> ~9300). New results record the real value per fold
+    # (num_labelled_effective); old ones use the per-class estimate. The
+    # nominal N stays in n_nominal.
     full["n_nominal"] = full["configuration"].astype(str).str.extract(N_RE)[0].astype(int)
     recorded = (pd.to_numeric(full["num_labelled_effective"], errors="coerce")
                 if "num_labelled_effective" in full.columns else pd.Series(np.nan, index=full.index))
@@ -229,7 +236,7 @@ def load_all(results_dir: Path) -> pd.DataFrame:
     full = full.dropna(subset=["n", "f1"])
     full["model_short"] = [short_model(e, m) for e, m in
                            zip(full["exp_dir"], full["model"])]
-    # Resumos antigos nao tem engine/decoding: eram sempre hf/free.
+    # Old summaries have no engine/decoding: they were always hf/free.
     for col, default in (("engine", "hf"), ("decoding", "free")):
         if col not in full.columns:
             full[col] = default
@@ -249,7 +256,7 @@ def aggregate(full: pd.DataFrame) -> pd.DataFrame:
 
 
 def filter_best(agg: pd.DataFrame) -> pd.DataFrame:
-    """Uma BestLine por (dataset, abordagem): maior media de f1_mean nos Ns."""
+    """One best line per (dataset, approach): the highest mean f1_mean over the Ns."""
     agg = agg.copy()
     agg["exp"] = agg["line"].map(exp_of)
     mean_by_line = agg.groupby(["dataset", "exp", "line"])["f1_mean"].mean().reset_index()
@@ -272,16 +279,16 @@ def warn_incomplete(agg: pd.DataFrame) -> None:
 
 
 def find_intersection(x1, y1, x2, y2):
-    """Intersecao em escala LOG no eixo X (igual a POC I).
+    """Crossing on a log x axis (as in the POC I).
 
-    Interpola Y sobre log10(X) num grid denso e retorna o primeiro ponto
-    onde y1 (fine-tuning) supera y2, ou None.
+    Interpolates y over log10(x) on a dense grid and returns the first point
+    where y1 (fine-tuning) rises above y2, or None.
     """
     x1, y1 = np.array(x1, dtype=float), np.array(y1, dtype=float)
     x2, y2 = np.array(x2, dtype=float), np.array(y2, dtype=float)
     if len(x1) < 2 or len(x2) < 2:
         return None
-    # remove NaN e ordena
+    # drop NaN and sort
     m1 = np.isfinite(x1) & np.isfinite(y1) & (x1 > 0)
     m2 = np.isfinite(x2) & np.isfinite(y2) & (x2 > 0)
     x1, y1 = x1[m1], y1[m1]
@@ -307,7 +314,7 @@ def find_intersection(x1, y1, x2, y2):
 
 
 def _best_line_of(g: pd.DataFrame, exp: str):
-    """Melhor linha de uma abordagem dentro do painel (maior media)."""
+    """Best line of an approach in the panel (highest mean)."""
     sub = g[g["line"].map(exp_of) == exp]
     if sub.empty:
         return None
@@ -316,11 +323,10 @@ def _best_line_of(g: pd.DataFrame, exp: str):
 
 
 def _series_for(g: pd.DataFrame, line: str):
-    """Serie (xs, ys%, std%) de uma linha.
+    """Series (xs, ys in %, std in %) of a line.
 
-    Prompting foi executado num unico N (sem variacao de sample):
-    repete o ponto linearmente por todo o eixo X do painel como reta
-    continua. Sem forja: usa o valor real, sem offsets.
+    Prompting runs at a single N (no sample variation): its real value is
+    repeated across the panel's x axis as a flat line, without offsets.
     """
     lg = g[g["line"] == line].sort_values("n")
     if exp_of(line) == "prompting" and lg["n"].nunique() == 1:
@@ -333,22 +339,38 @@ def _series_for(g: pd.DataFrame, line: str):
             lg["f1_std"].to_numpy(dtype=float) * 100.0)
 
 
-def plot_panel(ax, g: pd.DataFrame, legend_fontsize: int) -> None:
-    # Curvas em % (preserva CSV em fracao; so o visual converte).
-    # Cor fixa por abordagem; linestyle/marker uniformes ("-", "o") por enquanto.
-    # Vlines seguem cinzas.
+def plot_panel(ax, g: pd.DataFrame, legend_fontsize: int, detailed: bool = False) -> None:
+    # Curves in % (the CSV keeps fractions; only the plot converts).
+    # detailed=False (--best-only and per-model panels): one line per approach,
+    # all "-" with "o", as in the POC I plots.
+    # detailed=True (several models per approach): the colour stays the
+    # approach's and the model becomes dash + marker (style_for); only the best
+    # model of each approach is thick and solid, with a band and a legend star,
+    # the others thin, faded and dashed per model.
+    best_lines = ({_best_line_of(g, exp) for exp in g["line"].map(exp_of).unique()}
+                  if detailed else set())
     curve_handles = []
     for line, lg in sorted(g.groupby("line")):
         xs, ys, st = _series_for(g, line)
-        color, _, _ = style_for(line)
-        (ln,) = ax.plot(xs, ys, marker="o", markersize=4, linestyle="-",
-                        color=color, label=pretty_label(line))
-        lower = np.maximum(0.0, ys - st)
-        upper = np.minimum(100.0, ys + st)
-        ax.fill_between(xs, lower, upper, alpha=0.15, color=color)
-        curve_handles.append((APPROACH_ORDER.get(exp_of(line), 99), pretty_label(line), ln))
+        color, ls, mk = style_for(line)
+        label = pretty_label(line)
+        if not detailed:
+            ls, mk, size, width, alpha, is_best = "-", "o", 4, 1.5, 1.0, True
+        else:
+            is_best = line in best_lines
+            size, width, alpha = (5, 2.4, 1.0) if is_best else (3, 1.0, 0.55)
+            if is_best:  # solid: the model is told apart by marker and legend
+                ls = "-"
+                label += " ★"
+        (ln,) = ax.plot(xs, ys, marker=mk, markersize=size, linestyle=ls, linewidth=width,
+                        alpha=alpha, color=color, label=label)
+        if is_best:
+            lower = np.maximum(0.0, ys - st)
+            upper = np.minimum(100.0, ys + st)
+            ax.fill_between(xs, lower, upper, alpha=0.15, color=color)
+        curve_handles.append((APPROACH_ORDER.get(exp_of(line), 99), label, ln))
 
-    # Break-even: melhor FT vs melhor de cada outra abordagem
+    # Break-even: best FT against the best of each other approach
     ft_best = _best_line_of(g, "finetuning")
     if ft_best is not None:
         ft_x, ft_y, _ = _series_for(g, ft_best)
@@ -363,7 +385,7 @@ def plot_panel(ax, g: pd.DataFrame, legend_fontsize: int) -> None:
             if inter is None:
                 continue
             bx, by = float(inter[0]), float(inter[1])
-            if bx <= 10:  # filtra break-evens prematuros (ruido)
+            if bx <= 10:  # skip premature break-evens (noise)
                 continue
             cfg = BREAK_EVEN_CONFIG.get(other_exp, {"color": "black", "linestyle": "--"})
             ax.vlines(x=bx, ymin=0, ymax=by, colors=cfg["color"],
@@ -382,10 +404,10 @@ def plot_panel(ax, g: pd.DataFrame, legend_fontsize: int) -> None:
               fontsize=legend_fontsize, loc="lower right")
 
 
-def plot_singles(agg: pd.DataFrame, out_dir: Path, dpi: int) -> None:
+def plot_singles(agg: pd.DataFrame, out_dir: Path, dpi: int, detailed: bool = False) -> None:
     for ds, g in sorted(agg.groupby("dataset")):
         fig, ax = plt.subplots(figsize=(9, 6))
-        plot_panel(ax, g, legend_fontsize=8)
+        plot_panel(ax, g, legend_fontsize=7 if detailed else 8, detailed=detailed)
         ax.set_xlabel("Amostras rotuladas (log)")
         ax.set_title(ds.upper())
         fig.tight_layout()
@@ -396,7 +418,7 @@ def plot_singles(agg: pd.DataFrame, out_dir: Path, dpi: int) -> None:
 
 
 def plot_combined(agg: pd.DataFrame, out_dir: Path, dpi: int,
-                  name: str = "break_even_combined.png") -> None:
+                  name: str = "break_even_combined.png", detailed: bool = False) -> None:
     datasets = sorted(agg["dataset"].unique().tolist())
     n = len(datasets)
     cols = 2 if n > 1 else 1
@@ -406,8 +428,9 @@ def plot_combined(agg: pd.DataFrame, out_dir: Path, dpi: int,
     axes = axes.flatten()
     for idx, ds in enumerate(datasets):
         ax = axes[idx]
-        plot_panel(ax, agg[agg["dataset"] == ds], legend_fontsize=10)
-        if idx // cols == rows - 1:  # so a linha de baixo tem xlabel
+        plot_panel(ax, agg[agg["dataset"] == ds], legend_fontsize=8 if detailed else 10,
+                   detailed=detailed)
+        if idx // cols == rows - 1:  # only the bottom row has an xlabel
             ax.set_xlabel("Amostras rotuladas (log)")
         ax.set_title(ds.upper())
     for ax in axes[n:]:
@@ -419,15 +442,77 @@ def plot_combined(agg: pd.DataFrame, out_dir: Path, dpi: int,
     log.info("salvo %s", out)
 
 
+def llm_models(agg: pd.DataFrame) -> list:
+    """Models with any approach besides fine-tuning, in the fixed order."""
+    found = {model_of(ln) for ln in agg["line"] if exp_of(ln) != "finetuning"}
+    return sorted(found, key=lambda m: MODEL_ORDER.index(m) if m in MODEL_ORDER else len(MODEL_ORDER))
+
+
+def model_panel_data(g: pd.DataFrame, model: str) -> pd.DataFrame:
+    """Lines of one model (every approach and variant) plus the dataset's best
+    fine-tuning, the reference of each panel."""
+    ft_best = _best_line_of(g, "finetuning")
+    keep = [ln == ft_best or (model_of(ln) == model and exp_of(ln) != "finetuning")
+            for ln in g["line"]]
+    return g[keep]
+
+
+def plot_by_model(agg: pd.DataFrame, out_dir: Path, dpi: int, single: bool = True,
+                  combined: bool = True, name: str = "break_even_by_model.png") -> None:
+    """One column per LLM: the model's approaches against the dataset's best
+    fine-tuning (the same reference in every column), with each approach's
+    break-even. One figure per dataset and, if combined, a grid with all."""
+    models = llm_models(agg)
+    datasets = sorted(agg["dataset"].unique().tolist())
+    if not models:
+        log.warning("--by-model: nenhum modelo alem do fine-tuning nos resultados")
+        return
+
+    def draw(ax, ds, model):
+        g = model_panel_data(agg[agg["dataset"] == ds], model)
+        plot_panel(ax, g, legend_fontsize=7)
+        ax.set_title(f"{ds.upper()} — {MODEL_PRETTY.get(model, model)}")
+
+    if single:
+        for ds in datasets:
+            fig, axes = plt.subplots(1, len(models), figsize=(5.5 * len(models), 4.5),
+                                     squeeze=False, sharey=True)
+            for ax, model in zip(axes[0], models):
+                draw(ax, ds, model)
+                ax.set_xlabel("Amostras rotuladas (log)")
+            fig.tight_layout()
+            out = out_dir / f"break_even_by_model_{ds}.png"
+            fig.savefig(out, dpi=dpi)
+            plt.close(fig)
+            log.info("salvo %s", out)
+    if combined:
+        fig, axes = plt.subplots(len(datasets), len(models),
+                                 figsize=(5.5 * len(models), 4.2 * len(datasets)),
+                                 squeeze=False, sharey=True)
+        for r, ds in enumerate(datasets):
+            for c, model in enumerate(models):
+                draw(axes[r][c], ds, model)
+                if r == len(datasets) - 1:
+                    axes[r][c].set_xlabel("Amostras rotuladas (log)")
+        fig.tight_layout()
+        out = out_dir / name
+        fig.savefig(out, dpi=dpi)
+        plt.close(fig)
+        log.info("salvo %s", out)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--results-dir", default="results")
     ap.add_argument("--out-dir", default="analysis/figures")
     ap.add_argument("--datasets", nargs="+", default=None)
     ap.add_argument("--best-only", action="store_true",
-                    help="uma BestLine por abordagem (maior media de F1 nos Ns)")
-    ap.add_argument("--no-combined", action="store_true", help="nao gera figura 2-colunas")
-    ap.add_argument("--no-single", action="store_true", help="nao gera PNGs individuais")
+                    help="one best line per approach (highest mean F1 over the Ns)")
+    ap.add_argument("--no-combined", action="store_true", help="skip the 2-column combined figure")
+    ap.add_argument("--no-single", action="store_true", help="skip the per-dataset PNGs")
+    ap.add_argument("--no-by-model", action="store_true",
+                    help="skip the per-model figures (break_even_by_model*.png; "
+                         "they are not written with --best-only either)")
     ap.add_argument("--dpi-combined", type=int, default=300)
     ap.add_argument("--dpi-single", type=int, default=150)
     ap.add_argument("--combined-name", default="break_even_combined.png")
@@ -440,15 +525,20 @@ def main() -> None:
     warn_incomplete(agg)
     if args.best_only:
         agg = filter_best(agg)
+    # Several models per approach: colour from the approach, dash/marker from the model.
+    detailed = not args.best_only
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
     agg.to_csv(Path(args.out_dir) / "break_even_agg.csv", index=False)
     log.info("salvo %s (%d linhas)",
              Path(args.out_dir) / "break_even_agg.csv", len(agg))
     if not args.no_single:
-        plot_singles(agg, Path(args.out_dir), dpi=args.dpi_single)
+        plot_singles(agg, Path(args.out_dir), dpi=args.dpi_single, detailed=detailed)
     if not args.no_combined:
         plot_combined(agg, Path(args.out_dir), dpi=args.dpi_combined,
-                      name=args.combined_name)
+                      name=args.combined_name, detailed=detailed)
+    if detailed and not args.no_by_model:
+        plot_by_model(agg, Path(args.out_dir), dpi=args.dpi_single,
+                      single=not args.no_single, combined=not args.no_combined)
 
 
 if __name__ == "__main__":
