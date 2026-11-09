@@ -38,6 +38,7 @@ import logging
 import math
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 
@@ -49,10 +50,8 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from data import load_text_and_targets  # noqa: E402
 from prompter import PromptFormatter  # noqa: E402
 from run_experiments import DATASET_CONFIGS  # noqa: E402
-from sample_pool import effective_num_labelled  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("plot_break_even")
@@ -182,6 +181,10 @@ def variant_of(engine, decoding) -> str:
 def train_fold_class_counts(ds: str):
     """Samples per class in a training fold (the stratified RSKF varies by +-1)."""
     try:
+        # Imported here: data pulls in torch and transformers (up to ~2 min to
+        # import on a cold network disk) and only results without a recorded
+        # N need it.
+        from data import load_text_and_targets
         _, targets, classes = load_text_and_targets(ds, 0)
     except Exception as e:  # no network/cache: fall back to the formula without a cap
         log.warning("%s: contagem por classe indisponivel (%s); N efetivo sem teto", ds, e)
@@ -192,26 +195,41 @@ def train_fold_class_counts(ds: str):
 
 
 def estimate_effective_n(n: int, ds: str) -> int:
+    from sample_pool import effective_num_labelled  # imports torch (~20 s), see train_fold_class_counts
     k = len(PromptFormatter.DEFAULT_CLASSES.get(ds, ()))
     return effective_num_labelled(n, k, train_fold_class_counts(ds))
 
 
+def find_summaries(results_dir: Path) -> list:
+    """summary.parquet files of a results tree.
+
+    The layout is <type>/<exp_dir>/<configuration>/<dataset>/<factor>/, so a
+    fixed-depth glob finds them without walking the thousands of
+    repeat_*_fold_* directories below, which takes ~30 s on a network disk.
+    Falls back to a full walk for a tree with another layout.
+    """
+    found = sorted(results_dir.glob("*/*/*/*/*/summary.parquet"))
+    return found or sorted(results_dir.rglob("summary.parquet"))
+
+
+def _read_summary(p: Path):
+    try:
+        df = pd.read_parquet(p)
+    except Exception as e:
+        log.warning("ignorando %s: %s", p, e)
+        return None
+    # model tag from the {exp}_{model}_{size} directory
+    try:
+        exp_dir = p.parents[3].name
+    except IndexError:
+        exp_dir = ""
+    return df.assign(exp_dir=exp_dir)
+
+
 def load_all(results_dir: Path) -> pd.DataFrame:
-    frames = []
-    for p in sorted(results_dir.rglob("summary.parquet")):
-        try:
-            df = pd.read_parquet(p)
-        except Exception as e:
-            log.warning("ignorando %s: %s", p, e)
-            continue
-        # model tag from the {exp}_{model}_{size} directory
-        try:
-            exp_dir = p.parents[3].name
-        except IndexError:
-            exp_dir = ""
-        df = df.copy()
-        df["exp_dir"] = exp_dir
-        frames.append(df)
+    # Reads are latency-bound on a network disk: a few threads overlap them.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        frames = [df for df in pool.map(_read_summary, find_summaries(results_dir)) if df is not None]
     if not frames:
         raise SystemExit(f"nenhum summary.parquet em {results_dir}")
     full = pd.concat(frames, ignore_index=True)
@@ -227,8 +245,13 @@ def load_all(results_dir: Path) -> pd.DataFrame:
     full["n_nominal"] = full["configuration"].astype(str).str.extract(N_RE)[0].astype(int)
     recorded = (pd.to_numeric(full["num_labelled_effective"], errors="coerce")
                 if "num_labelled_effective" in full.columns else pd.Series(np.nan, index=full.index))
-    estimated = [estimate_effective_n(n, ds) for n, ds in zip(full["n_nominal"], full["dataset"])]
-    full["n_effective"] = recorded.fillna(pd.Series(estimated, index=full.index))
+    # The estimate loads the datasets (~4 s each), so only rows without a
+    # recorded value pay for it, once per (dataset, N).
+    missing = full.loc[recorded.isna(), ["dataset", "n_nominal"]].drop_duplicates()
+    estimates = {(ds, n): estimate_effective_n(n, ds) for ds, n in missing.itertuples(index=False)}
+    estimated = pd.Series([estimates.get((ds, n)) for ds, n in zip(full["dataset"], full["n_nominal"])],
+                          index=full.index, dtype=float)
+    full["n_effective"] = recorded.fillna(estimated)
     full["n"] = (full.groupby(["dataset", "exp_dir", "experiment_type", "n_nominal"])["n_effective"]
                  .transform("mean").round().astype(int))
     full["f1"] = full.apply(metric_for, axis=1)
