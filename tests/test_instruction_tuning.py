@@ -252,5 +252,32 @@ class TestLoraCoverage(unittest.TestCase):
                 self._assert_every_linear_is_tuned(config)
 
 
+class TestReleaseITFoldMemory(unittest.TestCase):
+    """A finished fold's embedding must not outlive it: Trainer registers it in
+    bitsandbytes' GlobalOptimManager singleton when the optimizer is 8-bit."""
+
+    def test_registered_embedding_is_freed(self):
+        try:
+            from bitsandbytes.optim import GlobalOptimManager
+        except ImportError:
+            self.skipTest("bitsandbytes not installed")
+        import weakref
+
+        import torch
+        from main import release_it_fold_memory
+
+        embedding = torch.nn.Embedding(8, 4)
+        embedding.cycle = [embedding]  # the rest of a fold is held only by cycles
+        # Same call as transformers.Trainer.create_optimizer with paged_adamw_8bit.
+        GlobalOptimManager.get_instance().register_module_override(embedding, "weight", {"optim_bits": 32})
+        alive = weakref.ref(embedding)
+        del embedding
+        self.assertIsNotNone(alive())
+
+        release_it_fold_memory()
+        self.assertIsNone(alive())
+        self.assertEqual(GlobalOptimManager.get_instance().module_weight_config_triple, [])
+
+
 if __name__ == '__main__':
     unittest.main()

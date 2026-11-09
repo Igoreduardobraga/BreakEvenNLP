@@ -21,6 +21,7 @@ import torch
 import numpy as np
 import os
 import copy
+import gc
 import json
 from sklearn.metrics import f1_score, accuracy_score
 from sklearn.model_selection import RepeatedStratifiedKFold, train_test_split
@@ -289,6 +290,26 @@ def prompt_icl_experiment(randomness_factor_seeds, model, tokenizer, experiment=
 
 
 
+def release_it_fold_memory():
+    """Frees the GPU memory an earlier instruction-tuning fold left behind.
+
+    With paged_adamw_8bit, Trainer registers every nn.Embedding in bitsandbytes'
+    GlobalOptimManager singleton, which never drops them: each fold kept its
+    fp32 input embedding (3.8 GiB on Qwen 3.5 9B, 2.3 GiB on Phi-4-mini) and
+    the next folds ran out of memory while loading the model. The rest of a
+    fold is held only by reference cycles, which gc.collect() frees.
+    """
+    try:
+        from bitsandbytes.optim import GlobalOptimManager
+    except ImportError:
+        pass
+    else:
+        GlobalOptimManager.get_instance().initialize()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer, investigation_path,
                                   train_test_indices=None):
     if ENGINE == 'vllm':
@@ -297,6 +318,8 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
             "Run instruction_tuning with --engine hf, or save the merged model "
             "and evaluate it via --experiment_type icl/prompting --engine vllm."
         )
+    # Before loading this fold's model, so it also covers a fold that failed.
+    release_it_fold_memory()
     LoraConfig, get_peft_model, prepare_model_for_kbit_training = _require_it_deps()
     # LoRA weights are created on the GPU before the Trainer seeds anything:
     # seed them per fold so a resumed run reproduces the same adapter.
