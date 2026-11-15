@@ -88,7 +88,7 @@ class TestItLearningRate(unittest.TestCase):
         self.assertEqual(_flag(small, "--holdout_val"), "1")
         self.assertEqual(_flag(small, "--it_val_only"), "1")
         self.assertEqual(_flag(small, "--results_root"), "results_it_lr_sweep")
-        grid = rx.it_modern_experiment("sst2", "qwen", "9b", 100, 2e-4)
+        grid = rx.it_experiment("sst2", "qwen", "9b", 100, 2e-4)
         for flag in ("--holdout_val", "--it_val_only"):
             self.assertNotIn(flag, grid["cmd_args"])
 
@@ -104,6 +104,52 @@ class TestItLearningRate(unittest.TestCase):
         self.assertEqual((row["model"], row["band"], row["lr"]), ("qwen_9b", "small", 1e-4))
         self.assertAlmostEqual(row["val_loss"], 0.3)
         self.assertEqual(row["val_folds"], 2)
+
+
+    def test_older_it_models_use_the_chosen_rate_per_band(self):
+        chosen = {"mistral_base": {"small": 1e-4}, "flan-t5_base": {"large": 3e-4}}
+        with mock.patch.object(rx, "load_learning_rates", return_value=chosen):
+            exps = rx.generate_it_mistral_zephyr_commands() + rx.generate_it_flan_t5_commands()
+        lr = {(e["model"], e["dataset"], e["num_labelled"]): e for e in exps}
+        self.assertEqual(float(_flag(lr[("mistral", "sst2", 50)], "--lr")), 1e-4)
+        self.assertEqual(lr[("zephyr", "sst2", 50)]["lr"], rx.DEFAULT_IT_LR)
+        self.assertEqual(float(_flag(lr[("flan-t5", "sst2", 5000)], "--lr")), 3e-4)
+        # Flan-T5 is fully fine-tuned: without a choice it keeps the legacy rate, not QLoRA's.
+        self.assertEqual(lr[("flan-t5", "sst2", 50)]["lr"], 1e-5)
+        flan = lr[("flan-t5", "sst2", 50)]
+        self.assertEqual(flan["script_origin"], "it-flan-t5.sh")
+        self.assertEqual(rx.results_dir(flan), os.path.join(
+            "results", "instruction_tuning", "instruction_tuning_flan-t5_base", "num_samples_50",
+            "sst2", "golden_model"))
+
+    def test_flan_t5_sweeps_its_own_grid(self):
+        grids = sweep.default_lrs("instruction_tuning", ["flan-t5_base", "mistral_base"])
+        self.assertEqual(grids["flan-t5_base"], sweep.FLAN_T5_LRS)
+        self.assertEqual(grids["mistral_base"], sweep.APPROACHES["instruction_tuning"]["lrs"])
+        exps = sweep.sweep_experiments(["flan-t5_base", "mistral_base"], ["sst2"], grids,
+                                       "results_it_lr_sweep", approach="instruction_tuning")
+        lrs = {}
+        for e in exps:
+            lrs.setdefault((_flag(e, "--model"), _flag(e, "--model_size")), set()).add(e["lr"])
+        self.assertEqual(lrs, {("flan-t5", "base"): set(sweep.FLAN_T5_LRS),
+                               ("mistral", "base"): set(grids["mistral_base"])})
+
+
+class TestMergeChoice(unittest.TestCase):
+
+    def test_models_left_out_of_a_run_keep_their_choice(self):
+        previous = {"approach": "instruction_tuning", "lrs": [2e-5, 5e-5],
+                    "learning_rates": {"qwen_9b": {"small": 2e-5}, "mistral_base": {"small": 5e-4}}}
+        rates, grids = sweep.merge_choice(previous, "instruction_tuning",
+                                          {"mistral_base": {"small": 1e-4}},
+                                          {"mistral_base": [1e-4], "zephyr_base": [1e-4]})  # zephyr: no result yet
+        self.assertEqual(rates, {"qwen_9b": {"small": 2e-5}, "mistral_base": {"small": 1e-4}})
+        self.assertEqual(grids, {"qwen_9b": [2e-5, 5e-5], "mistral_base": [1e-4]})
+
+    def test_a_file_of_another_approach_is_not_merged(self):
+        previous = {"approach": "finetuning", "learning_rates": {"bert": {"small": 3e-5}}}
+        rates, _ = sweep.merge_choice(previous, "instruction_tuning", {"qwen_9b": {"small": 2e-5}}, {})
+        self.assertEqual(rates, {"qwen_9b": {"small": 2e-5}})
 
 
 class TestSelect(unittest.TestCase):

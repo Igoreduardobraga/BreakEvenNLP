@@ -6,7 +6,7 @@ Reproduces the runs and hyperparameters of the original scripts in
 'legacy/run_experiments/', except for the test set, now shared by every
 approach (TEST_SET_ARGS), the shots of Llama 3 ICL and of IT evaluated with
 ICL, now the same as ICL's (ICL_SHOTS_ARGS), and the learning rates of
-fine-tuning and modern IT, chosen per model and N band by run_lr_sweep.py.
+fine-tuning and IT, chosen per model and N band by run_lr_sweep.py.
 Features:
 - Selection by script, dataset or model
 - Dry run that lists the commands without running them
@@ -252,95 +252,6 @@ def generate_icl_llama3_commands() -> List[Dict[str, Any]]:
     return commands
 
 
-def generate_it_flan_t5_commands() -> List[Dict[str, Any]]:
-    """Commands of run_experiments/it-flan-t5.sh."""
-    commands = []
-    datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
-    model = "flan-t5"
-
-    for ds in datasets:
-        cfg = DATASET_CONFIGS[ds]
-        for n in cfg["sizes"]:
-            cmd_args = [
-                sys.executable, "main.py",
-                "--experiment_name", "instruction_tuning",
-                "--configuration_name", f"num_samples_{n}",
-                "--experiment_type", "instruction_tuning",
-                "--dataset", ds,
-                "--model", model,
-                "--num_labelled", str(n),
-                *TEST_SET_ARGS,
-                *ICL_SHOTS_ARGS,
-                "--batch_size", "4",
-                "--num_epochs", "5",
-                "--lr", "1e-5",
-                "--max_len", "128",
-                "--factor", "golden_model",
-                "--rskf_splits", str(cfg["rskf_splits"]),
-                "--rskf_repeats", "1",
-                "--rskf_seed", "27"
-            ]
-            commands.append({
-                "script_origin": "it-flan-t5.sh",
-                "experiment_type": "instruction_tuning",
-                "experiment_name": "instruction_tuning",
-                "dataset": ds,
-                "model": model,
-                "model_size": "base",
-                "num_labelled": n,
-                "configuration_name": f"num_samples_{n}",
-                "rskf_splits": cfg["rskf_splits"],
-                "rskf_repeats": 1,
-                "cmd_args": cmd_args,
-            })
-    return commands
-
-
-def generate_it_mistral_zephyr_commands() -> List[Dict[str, Any]]:
-    """Commands of run_experiments/it-mistral-zephyr.sh."""
-    commands = []
-    datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
-    models = ["mistral", "zephyr"]
-
-    for ds in datasets:
-        cfg = DATASET_CONFIGS[ds]
-        for n in cfg["sizes"]:
-            for m in models:
-                cmd_args = [
-                    sys.executable, "main.py",
-                    "--experiment_name", "instruction_tuning",
-                    "--configuration_name", f"num_samples_{n}",
-                    "--experiment_type", "instruction_tuning",
-                    "--dataset", ds,
-                    "--model", m,
-                    "--num_labelled", str(n),
-                    *TEST_SET_ARGS,
-                    *ICL_SHOTS_ARGS,
-                    "--batch_size", "4",
-                    "--num_epochs", "5",
-                    "--lr", "1e-5",
-                    "--max_len", "128",
-                    "--factor", "golden_model",
-                    "--rskf_splits", str(cfg["rskf_splits"]),
-                    "--rskf_repeats", "1",
-                    "--rskf_seed", "27"
-                ]
-                commands.append({
-                    "script_origin": "it-mistral-zephyr.sh",
-                    "experiment_type": "instruction_tuning",
-                    "experiment_name": "instruction_tuning",
-                    "dataset": ds,
-                    "model": m,
-                    "model_size": "base",
-                    "num_labelled": n,
-                    "configuration_name": f"num_samples_{n}",
-                    "rskf_splits": cfg["rskf_splits"],
-                    "rskf_repeats": 1,
-                    "cmd_args": cmd_args,
-                })
-    return commands
-
-
 def generate_prompting_commands() -> List[Dict[str, Any]]:
     """Commands of run_experiments/prompting.sh."""
     commands = []
@@ -520,22 +431,30 @@ def generate_prompting_modern_commands() -> List[Dict[str, Any]]:
 
 
 IT_MODERN_MODELS = [("qwen", "9b"), ("phi", "mini"), ("gemma", "12b")]
+IT_FLAN_T5_MODELS = [("flan-t5", "base")]
+IT_MISTRAL_ZEPHYR_MODELS = [("mistral", "base"), ("zephyr", "base")]
 
-# IT LoRA LR per model and N band, chosen by run_lr_sweep.py
+# IT LR per model and N band, chosen by run_lr_sweep.py
 IT_LR_FILE = "it_learning_rates.json"
 DEFAULT_IT_LR = 2e-4
+DEFAULT_IT_LRS = {"flan-t5_base": 1e-5}
 
 
 def it_lr_key(m: str, m_size: str) -> str:
     return f"{m}_{m_size}"
 
 
-def it_modern_experiment(ds: str, m: str, m_size: str, n: int, lr: float,
-                         rskf_splits: Optional[int] = None,
-                         configuration_name: Optional[str] = None,
-                         results_root: str = "results",
-                         holdout_val: bool = False,
-                         val_only: bool = False) -> Dict[str, Any]:
+def default_it_lr(key: str) -> float:
+    return DEFAULT_IT_LRS.get(key, DEFAULT_IT_LR)
+
+
+def it_experiment(ds: str, m: str, m_size: str, n: int, lr: float,
+                  rskf_splits: Optional[int] = None,
+                  configuration_name: Optional[str] = None,
+                  results_root: str = "results",
+                  holdout_val: bool = False,
+                  val_only: bool = False,
+                  script_origin: str = "it-modern (run_experiments.py)") -> Dict[str, Any]:
     cfg = DATASET_CONFIGS[ds]
     cfg_name = configuration_name or f"num_samples_{n}"
     splits = rskf_splits or cfg["rskf_splits"]
@@ -565,7 +484,7 @@ def it_modern_experiment(ds: str, m: str, m_size: str, n: int, lr: float,
     if val_only:
         cmd_args += ["--it_val_only", "1"]
     return {
-        "script_origin": "it-modern (run_experiments.py)",
+        "script_origin": script_origin,
         "experiment_type": "instruction_tuning",
         "experiment_name": "instruction_tuning",
         "dataset": ds,
@@ -581,25 +500,41 @@ def it_modern_experiment(ds: str, m: str, m_size: str, n: int, lr: float,
     }
 
 
-def generate_it_modern_commands() -> List[Dict[str, Any]]:
-    """Instruction-tuning commands for the modern models, with the LR chosen per model and N band."""
+def generate_it_commands(models: List[Tuple[str, str]], script_origin: str) -> List[Dict[str, Any]]:
+    """Instruction-tuning grid of the given models, with the LR chosen per model and N band."""
     datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
     chosen = load_learning_rates(IT_LR_FILE)
     commands = []
     missing = set()
     for ds in datasets:
         for n in DATASET_CONFIGS[ds]["sizes"]:
-            for m, m_size in IT_MODERN_MODELS:
+            for m, m_size in models:
                 key = it_lr_key(m, m_size)
                 lr = chosen.get(key, {}).get(ft_lr_band(n))
                 if lr is None:
-                    missing.add(f"{key}/{ft_lr_band(n)}")
-                    lr = DEFAULT_IT_LR
-                commands.append(it_modern_experiment(ds, m, m_size, n, lr))
+                    lr = default_it_lr(key)
+                    missing.add(f"{key}/{ft_lr_band(n)} ({lr:g})")
+                commands.append(it_experiment(ds, m, m_size, n, lr, script_origin=script_origin))
     if missing:
-        print(f" WARNING: no LR chosen in {IT_LR_FILE} for {', '.join(sorted(missing))}; "
-              f"using {DEFAULT_IT_LR:g} (run run_lr_sweep.py --approach instruction_tuning first).")
+        print(f" WARNING: no LR chosen in {IT_LR_FILE} for {', '.join(sorted(missing))}; using the "
+              f"default in parentheses (run run_lr_sweep.py --approach instruction_tuning first).")
     return commands
+
+
+def generate_it_modern_commands() -> List[Dict[str, Any]]:
+    """Instruction-tuning commands for the modern models: Qwen 3.5 9B, Phi-4-mini, Gemma 4 12B."""
+    return generate_it_commands(IT_MODERN_MODELS, "it-modern (run_experiments.py)")
+
+
+def generate_it_flan_t5_commands() -> List[Dict[str, Any]]:
+    """Commands of run_experiments/it-flan-t5.sh, with the LR chosen per N band instead of 1e-5."""
+    return generate_it_commands(IT_FLAN_T5_MODELS, "it-flan-t5.sh")
+
+
+def generate_it_mistral_zephyr_commands() -> List[Dict[str, Any]]:
+    """Commands of run_experiments/it-mistral-zephyr.sh, with the LR chosen per model and N band
+    instead of 1e-5."""
+    return generate_it_commands(IT_MISTRAL_ZEPHYR_MODELS, "it-mistral-zephyr.sh")
 
 
 SCRIPTS_MAP = {

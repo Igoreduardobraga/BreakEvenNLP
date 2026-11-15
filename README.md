@@ -40,6 +40,10 @@ uv run python run_experiments.py --script finetuning --datasets sst2 boolq ag_ne
 python run_experiments.py --script prompting-modern --datasets sst2 boolq ag_news snips --models qwen phi gemma --engine vllm --decoding guided
 python run_experiments.py --script icl-modern --datasets sst2 boolq ag_news snips --models qwen phi gemma --engine vllm --decoding guided
 python run_experiments.py --script it-modern --datasets sst2 boolq ag_news snips --models qwen phi gemma --decoding guided
+
+# IT with the older models, at the learning rates of the IT sweep (from .venv-vllm)
+python run_experiments.py --script it-flan-t5 --datasets sst2 boolq ag_news snips --decoding guided
+python run_experiments.py --script it-mistral-zephyr --datasets sst2 boolq ag_news snips --decoding guided
 ```
 
 `--decoding guided` restricts every answer to one of the class names: through vLLM's structured outputs for prompting and ICL, and on HF, where the instruction-tuned model is evaluated, by masking every token that would take the answer off the class names.
@@ -52,7 +56,7 @@ Instruction tuning evaluates each fold's trained model twice: zero-shot, the for
 
 Instruction tuning trains 5 epochs or 1250 optimizer steps, whichever comes first, but never less than one epoch (`IT_STEP_BUDGET` in `main.py`), for every model, Flan-T5 included. Every N up to 1000 trains all 5 epochs, N = 2500 about 2, N = 5000 about 1 and larger N exactly one, so every labelled sample is seen. With a validation split, the adapter kept is the best of 5 evenly spaced evaluations, one per epoch when every epoch trains.
 
-Fine-tuning and the LoRA of instruction tuning train with a learning rate chosen per model and N band (N ≤ 100, ≤ 1000, larger) by validation loss, never by test F1. `run_lr_sweep.py` writes the choice to `ft_learning_rates.json` or `it_learning_rates.json`, which the grid reads; without a choice, IT uses 2e-4, the usual QLoRA rate. The IT sweep scores 2 folds per configuration and skips the test generations, which would cost more than the training. Each run rewrites the JSON with the models it was given, so run it with all of them (the default):
+Fine-tuning and instruction tuning train with a learning rate chosen per model and N band (N ≤ 100, ≤ 1000, larger) by validation loss, never by test F1. `run_lr_sweep.py` writes the choice to `ft_learning_rates.json` or `it_learning_rates.json`, which the grid reads. The IT sweep covers every IT model: the LoRA of Qwen, Phi, Gemma, Mistral and Zephyr over 2e-5 to 5e-4, and Flan-T5, which is fully fine-tuned, over its own grid of 1e-5 to 1e-3. Without a choice, IT uses 2e-4, the usual QLoRA rate, or 1e-5 for Flan-T5. The IT sweep scores 2 folds per configuration and skips the test generations, which would cost more than the training. A run with `--models` updates only those models in the JSON and keeps the others' choice:
 
 ```bash
 uv run python run_lr_sweep.py --gpus 0                                   # fine-tuning
