@@ -39,6 +39,26 @@ class TestInstructionTuningCurves(unittest.TestCase):
                          "Instruction Tuning + ICL (Qwen)")
 
 
+@unittest.skipUnless(HAS_MATPLOTLIB, "needs matplotlib")
+class TestModelFilter(unittest.TestCase):
+
+    def setUp(self):
+        root = tempfile.mkdtemp()
+        _summary(root, "finetuning", "finetuning_bert_base", "bert-base-uncased", f1_macro=0.5)
+        _summary(root, "prompting", "prompting_qwen_9b", "Qwen/Qwen3.5-9B", f1_macro=0.7)
+        _summary(root, "prompting", "prompting_phi_mini", "microsoft/Phi-4-mini-instruct", f1_macro=0.6)
+        self.full = pbe.load_all(Path(root))
+
+    def test_only_the_given_models_are_kept(self):
+        lines = set(pbe.filter_models(self.full, ["bert", "qwen"])["line"])
+        self.assertEqual(lines, {"bert/finetuning", "qwen/prompting"})
+
+    def test_an_unknown_model_names_the_available_ones(self):
+        with self.assertRaises(SystemExit) as ctx:
+            pbe.filter_models(self.full, ["qwen_9b"])
+        self.assertIn("'phi'", str(ctx.exception))
+
+
 def _agg(lines):
     rows = [("toy", line, n, n, 0.5 + 0.05 * i + 0.02 * k, 0.01, 5)
             for i, line in enumerate(lines) for k, n in enumerate((14, 100, 1000))]

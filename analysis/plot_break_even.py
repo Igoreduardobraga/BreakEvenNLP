@@ -31,7 +31,8 @@ use another --out-dir so the two modes do not overwrite each other's PNGs.
 Usage:
     .venv/bin/python analysis/plot_break_even.py [--results-dir results_legacy]
         [--out-dir analysis/figures] [--datasets sst2 boolq]
-        [--best-only] [--no-combined] [--no-single] [--no-by-model]
+        [--models roberta deberta qwen] [--best-only] [--no-combined] [--no-single]
+        [--no-by-model]
 """
 import argparse
 import logging
@@ -259,6 +260,15 @@ def load_all(results_dir: Path) -> pd.DataFrame:
     full["line"] = (full["model_short"] + full["variant"] + "/"
                     + full["experiment_type"].astype(str))
     return full
+
+
+def filter_models(full: pd.DataFrame, models) -> pd.DataFrame:
+    """Rows of the given models (short names, as in the line key), fine-tuning included."""
+    found = set(full["model_short"])
+    unknown = sorted(set(models) - found)
+    if unknown:
+        raise SystemExit(f"--models {unknown} not in the results; available: {sorted(found)}")
+    return full[full["model_short"].isin(models)]
 
 
 def aggregate(full: pd.DataFrame) -> pd.DataFrame:
@@ -513,6 +523,10 @@ def main() -> None:
     ap.add_argument("--results-dir", default="results")
     ap.add_argument("--out-dir", default="analysis/figures")
     ap.add_argument("--datasets", nargs="+", default=None)
+    ap.add_argument("--models", nargs="+", default=None,
+                    help="only these models, by short name (e.g. roberta deberta qwen phi gemma); fine-tuning is "
+                         "filtered too, so list a fine-tuning model to keep the break-even. Use another "
+                         "--out-dir so the full figures are not overwritten")
     ap.add_argument("--best-only", action="store_true",
                     help="one best line per approach (highest mean F1 over the Ns)")
     ap.add_argument("--no-combined", action="store_true", help="skip the 2-column combined figure")
@@ -528,6 +542,8 @@ def main() -> None:
     full = load_all(Path(args.results_dir))
     if args.datasets:
         full = full[full["dataset"].isin(args.datasets)]
+    if args.models:
+        full = filter_models(full, args.models)
     agg = aggregate(full)
     warn_incomplete(agg)
     if args.best_only:

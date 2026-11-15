@@ -19,7 +19,7 @@ read NVML's energy counter. CO2 is energy times a fixed carbon intensity.
 Usage:
     .venv/bin/python analysis/plot_sustainability.py [--metric energy|co2|time]
         [--results-dir results] [--out-dir analysis/figures] [--datasets sst2 boolq]
-        [--best-only]
+        [--models roberta deberta qwen] [--best-only]
 """
 import argparse
 import logging
@@ -139,6 +139,10 @@ def main() -> None:
     ap.add_argument("--results-dir", default="results")
     ap.add_argument("--out-dir", default="analysis/figures")
     ap.add_argument("--datasets", nargs="+", default=None)
+    ap.add_argument("--models", nargs="+", default=None,
+                    help="only these models, by short name (e.g. roberta deberta qwen phi gemma), "
+                         "fine-tuning included. Use another --out-dir so the full figures are not "
+                         "overwritten")
     ap.add_argument("--metric", default="energy", choices=list(METRICS))
     ap.add_argument("--best-only", action="store_true",
                     help="one line per approach: its best model by mean F1, as in plot_break_even.py")
@@ -148,6 +152,8 @@ def main() -> None:
     full = pbe.load_all(Path(args.results_dir))
     if args.datasets:
         full = full[full["dataset"].isin(args.datasets)]
+    if args.models:
+        full = pbe.filter_models(full, args.models)
     agg = aggregate(full)
     if args.best_only:
         agg = pbe.filter_best(agg)
