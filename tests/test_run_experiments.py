@@ -109,7 +109,8 @@ class TestShots(unittest.TestCase):
             cmd = exp["cmd_args"]
             return cmd[cmd.index("--num_shots") + 1]
 
-        icl = {shots(e) for e in rx.generate_icl_commands() + rx.generate_icl_modern_commands()}
+        icl = {shots(e) for e in rx.generate_icl_commands() + rx.generate_icl_llama3_commands()
+               + rx.generate_icl_modern_commands()}
         self.assertEqual(icl, {"2"})
         for generate in (rx.generate_it_flan_t5_commands, rx.generate_it_mistral_zephyr_commands,
                          rx.generate_it_modern_commands):
@@ -127,7 +128,7 @@ class TestDecodingFlags(unittest.TestCase):
         out = io.StringIO()
         with mock.patch("sys.argv", argv), contextlib.redirect_stdout(out):
             rx.main()
-        commands = [line for line in out.getvalue().splitlines() if "Comando:" in line]
+        commands = [line for line in out.getvalue().splitlines() if "Command:" in line]
         self.assertTrue(commands)
         self.assertTrue(all("--decoding guided" in c and "--engine" not in c for c in commands))
 
@@ -182,7 +183,7 @@ class TestForce(unittest.TestCase):
 
     def test_dry_run_force_only_lists_the_move(self):
         _, out = self._run("--force", "--dry-run")
-        self.assertIn(f"[SERÁ MOVIDO] {self.RESULTS} -> ", out)
+        self.assertIn(f"[WILL MOVE] {self.RESULTS} -> ", out)
         self.assertTrue(os.path.exists(os.path.join(self.RESULTS, "repeat_0_fold_0", "results.json")))
         self.assertFalse(os.path.exists("results_old"))
 

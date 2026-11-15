@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
 run_experiments.py
-Orquestrador Python de experimentos para o BreakEvenNLP.
-Reproduz as execuções e hiperparâmetros dos scripts originais de
-'legacy/run_experiments/', exceto o conjunto de teste, que agora é comum
-a todas as abordagens (TEST_SET_ARGS), e os shots com que o IT é avaliado
-em ICL, agora iguais aos do ICL (ICL_SHOTS_ARGS). Suporta:
-- Seleção granular por script, dataset ou modelo
-- Dry-run para visualização prévia dos comandos
-- Gestão de logs em arquivo por execução
-- Retomada inteligente (pula execuções já finalizadas)
-- --force refaz do zero, guardando os resultados anteriores em results_old/
-- Suporte a alocação de GPU (CUDA_VISIBLE_DEVICES)
-- Agrupamento de prompting/ICL: as configurações pendentes de um mesmo
-  modelo rodam num único main.py --sweep, carregando o modelo uma vez
-  (desligue com --no-group)
+Experiment orchestrator for BreakEvenNLP.
+Reproduces the runs and hyperparameters of the original scripts in
+'legacy/run_experiments/', except for the test set, now shared by every
+approach (TEST_SET_ARGS), the shots of Llama 3 ICL and of IT evaluated with
+ICL, now the same as ICL's (ICL_SHOTS_ARGS), and the learning rates of
+fine-tuning and modern IT, chosen per model and N band by run_lr_sweep.py.
+Features:
+- Selection by script, dataset or model
+- Dry run that lists the commands without running them
+- One log file per run
+- Resume: skips the runs whose folds are all saved
+- --force reruns from scratch, moving the previous results to results_old/
+- GPU selection (CUDA_VISIBLE_DEVICES)
+- Prompting/ICL grouping: the pending configurations of one model run in a
+  single main.py --sweep that loads the model once (disable with --no-group)
 """
 
 import os
@@ -147,7 +148,7 @@ def finetuning_experiment(ds: str, m: str, n: int, lr: float, rskf_repeats: int 
 
 
 def generate_finetuning_commands() -> List[Dict[str, Any]]:
-    """Grade de fine-tuning com a LR escolhida por modelo e faixa de N."""
+    """Fine-tuning grid with the LR chosen per model and N band."""
     datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
     models = ["bert", "roberta", "deberta"]
     chosen = load_learning_rates(FT_LR_FILE)
@@ -162,13 +163,13 @@ def generate_finetuning_commands() -> List[Dict[str, Any]]:
                     lr = DEFAULT_FT_LR
                 commands.append(finetuning_experiment(ds, m, n, lr))
     if missing:
-        print(f" AVISO: sem LR escolhida em {FT_LR_FILE} para {', '.join(sorted(missing))}; "
-              f"usando {DEFAULT_FT_LR:g} (rode run_lr_sweep.py antes).")
+        print(f" WARNING: no LR chosen in {FT_LR_FILE} for {', '.join(sorted(missing))}; "
+              f"using {DEFAULT_FT_LR:g} (run run_lr_sweep.py first).")
     return commands
 
 
 def generate_icl_commands() -> List[Dict[str, Any]]:
-    """Gera comandos exatamente como definidos em run_experiments/icl.sh"""
+    """Commands of run_experiments/icl.sh."""
     commands = []
     datasets = ["boolq", "ag_news", "snips", "sst2", "mrpc", "cola", "trec", "db_pedia"]
     models = ["llama2", "flan-t5", "zephyr", "mistral"]
@@ -210,7 +211,7 @@ def generate_icl_commands() -> List[Dict[str, Any]]:
 
 
 def generate_icl_llama3_commands() -> List[Dict[str, Any]]:
-    """Gera comandos exatamente como definidos em run_experiments/icl-llama3.sh"""
+    """Commands of run_experiments/icl-llama3.sh, with the shots of ICL_SHOTS_ARGS instead of 5."""
     commands = []
     datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
     model = "llama3"
@@ -228,7 +229,7 @@ def generate_icl_llama3_commands() -> List[Dict[str, Any]]:
                 "--model_size", "8b",
                 "--num_labelled", str(n),
                 *TEST_SET_ARGS,
-                "--num_shots", "5",
+                *ICL_SHOTS_ARGS,
                 "--batch_size", "2",
                 "--factor", "golden_model",
                 "--rskf_splits", str(cfg["rskf_splits"]),
@@ -252,7 +253,7 @@ def generate_icl_llama3_commands() -> List[Dict[str, Any]]:
 
 
 def generate_it_flan_t5_commands() -> List[Dict[str, Any]]:
-    """Gera comandos exatamente como definidos em run_experiments/it-flan-t5.sh"""
+    """Commands of run_experiments/it-flan-t5.sh."""
     commands = []
     datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
     model = "flan-t5"
@@ -296,7 +297,7 @@ def generate_it_flan_t5_commands() -> List[Dict[str, Any]]:
 
 
 def generate_it_mistral_zephyr_commands() -> List[Dict[str, Any]]:
-    """Gera comandos exatamente como definidos em run_experiments/it-mistral-zephyr.sh"""
+    """Commands of run_experiments/it-mistral-zephyr.sh."""
     commands = []
     datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
     models = ["mistral", "zephyr"]
@@ -341,7 +342,7 @@ def generate_it_mistral_zephyr_commands() -> List[Dict[str, Any]]:
 
 
 def generate_prompting_commands() -> List[Dict[str, Any]]:
-    """Gera comandos exatamente como definidos em run_experiments/prompting.sh"""
+    """Commands of run_experiments/prompting.sh."""
     commands = []
     datasets = ["ag_news", "snips", "boolq", "sst2", "mrpc", "cola", "trec", "db_pedia"]
     models = ["llama2", "mistral", "zephyr", "flan-t5"]
@@ -383,7 +384,7 @@ def generate_prompting_commands() -> List[Dict[str, Any]]:
 
 
 def generate_prompting_llama3_commands() -> List[Dict[str, Any]]:
-    """Gera comandos exatamente como definidos em run_experiments/prompting-llama3.sh"""
+    """Commands of run_experiments/prompting-llama3.sh."""
     commands = []
     datasets = ["ag_news", "snips", "boolq", "sst2", "mrpc", "cola", "trec", "db_pedia"]
     model = "llama3"
@@ -425,7 +426,7 @@ def generate_prompting_llama3_commands() -> List[Dict[str, Any]]:
 
 
 def generate_icl_modern_commands() -> List[Dict[str, Any]]:
-    """Gera comandos de ICL para os novos modelos: Qwen 3.5 9B, Phi-4-mini, Gemma 4 12B"""
+    """ICL commands for the modern models: Qwen 3.5 9B, Phi-4-mini, Gemma 4 12B."""
     commands = []
     datasets = ["boolq", "ag_news", "snips", "sst2", "mrpc", "cola", "trec", "db_pedia"]
     models = [
@@ -472,7 +473,7 @@ def generate_icl_modern_commands() -> List[Dict[str, Any]]:
 
 
 def generate_prompting_modern_commands() -> List[Dict[str, Any]]:
-    """Gera comandos de prompting zero-shot para os novos modelos: Qwen 3.5 9B, Phi-4-mini, Gemma 4 12B"""
+    """Zero-shot prompting commands for the modern models: Qwen 3.5 9B, Phi-4-mini, Gemma 4 12B."""
     commands = []
     datasets = ["ag_news", "snips", "boolq", "sst2", "mrpc", "cola", "trec", "db_pedia"]
     models = [
@@ -581,7 +582,7 @@ def it_modern_experiment(ds: str, m: str, m_size: str, n: int, lr: float,
 
 
 def generate_it_modern_commands() -> List[Dict[str, Any]]:
-    """Gera comandos de instruction tuning para os novos modelos, com a LR escolhida por modelo e faixa de N."""
+    """Instruction-tuning commands for the modern models, with the LR chosen per model and N band."""
     datasets = ["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"]
     chosen = load_learning_rates(IT_LR_FILE)
     commands = []
@@ -596,8 +597,8 @@ def generate_it_modern_commands() -> List[Dict[str, Any]]:
                     lr = DEFAULT_IT_LR
                 commands.append(it_modern_experiment(ds, m, m_size, n, lr))
     if missing:
-        print(f" AVISO: sem LR escolhida em {IT_LR_FILE} para {', '.join(sorted(missing))}; "
-              f"usando {DEFAULT_IT_LR:g} (rode run_lr_sweep.py --approach instruction_tuning antes).")
+        print(f" WARNING: no LR chosen in {IT_LR_FILE} for {', '.join(sorted(missing))}; "
+              f"using {DEFAULT_IT_LR:g} (run run_lr_sweep.py --approach instruction_tuning first).")
     return commands
 
 
@@ -616,7 +617,7 @@ SCRIPTS_MAP = {
 
 
 def results_dir(exp: Dict[str, Any]) -> str:
-    """Pasta em que o main.py grava os folds do experimento."""
+    """Directory where main.py writes the experiment's folds."""
     exp_dir = experiment_dir_name(exp["experiment_type"], exp["model"], exp["model_size"],
                                   exp.get("engine", "hf"), exp.get("decoding", "free"))
     return os.path.join(exp.get("results_root", "results"), exp["experiment_name"], exp_dir,
@@ -624,7 +625,7 @@ def results_dir(exp: Dict[str, Any]) -> str:
 
 
 def is_already_completed(exp: Dict[str, Any]) -> bool:
-    """Verifica se todos os folds do experimento já possuem results.json gravado."""
+    """True when every fold of the experiment has its results.json."""
     target_dir = results_dir(exp)
     if not os.path.isdir(target_dir):
         return False
@@ -641,11 +642,11 @@ def is_already_completed(exp: Dict[str, Any]) -> bool:
 
 
 def results_to_set_aside(experiments: List[Dict[str, Any]], stamp: str) -> List[Tuple[str, str]]:
-    """Origem e destino dos resultados que o --force tira do lugar antes de refazer.
+    """Source and destination of the results that --force moves away before rerunning.
 
-    Cada pasta vai para <raiz>_old/force_<stamp>/, no mesmo caminho relativo.
-    Sem os folds antigos no lugar o main.py refaz todos, e uma execução
-    interrompida continua sem --force em vez de misturar folds antigos e novos.
+    Each directory goes to <root>_old/force_<stamp>/, under the same relative path.
+    Without the old folds in place main.py reruns all of them, and an interrupted
+    run resumes without --force instead of mixing old and new folds.
     """
     moves, seen = [], set()
     for exp in experiments:
@@ -693,7 +694,7 @@ def _exp_tag(exp: Dict[str, Any]) -> str:
 
 
 def build_jobs(experiments: List[Dict[str, Any]], group: bool) -> List[Dict[str, Any]]:
-    """Um job por processo main.py: um experimento, ou um grupo via --sweep."""
+    """One job per main.py process: one experiment, or a group run through --sweep."""
     jobs: List[Dict[str, Any]] = []
     groups: Dict[tuple, Dict[str, Any]] = {}
     for exp in experiments:
@@ -727,7 +728,7 @@ def describe_job(job: Dict[str, Any]) -> str:
         return f"({first['script_origin']}) {first['model']} | {first['dataset']} | N={first['num_labelled']}"
     configs = ", ".join(f"{m['dataset']}:N={m['num_labelled']}" for m in members)
     return (f"({first['script_origin']}) {first['model']} {first['model_size']} | "
-            f"GRUPO com {len(members)} configurações, modelo carregado 1x: {configs}")
+            f"GROUP of {len(members)} configurations, model loaded once: {configs}")
 
 
 def job_command(job: Dict[str, Any], logs_dir: str) -> List[str]:
@@ -738,7 +739,7 @@ def job_command(job: Dict[str, Any], logs_dir: str) -> List[str]:
 
 
 def run_job(job: Dict[str, Any], gpu_id: Optional[str] = None, logs_dir: str = "logs") -> bool:
-    """Executa um job com isolamento de GPU e redirecionamento de logs."""
+    """Runs a job on the selected GPU, writing its output to a log file."""
     os.makedirs(logs_dir, exist_ok=True)
     log_file = os.path.join(logs_dir, f"{job['tag']}.log")
     cmd_args = job_command(job, logs_dir)
@@ -757,12 +758,12 @@ def run_job(job: Dict[str, Any], gpu_id: Optional[str] = None, logs_dir: str = "
     if gpu_id is not None:
         print(f"          GPU: {gpu_id}")
     print(f"          Log: {log_file}")
-    print(f"          Comando: {cmd_str}")
+    print(f"          Command: {cmd_str}")
 
     start_time = time.time()
     with open(log_file, "a") as f_out:
-        f_out.write(f"\n--- Iniciado em: {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
-        f_out.write(f"Comando: {cmd_str}\n\n")
+        f_out.write(f"\n--- Started at: {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+        f_out.write(f"Command: {cmd_str}\n\n")
         f_out.flush()
 
         process = subprocess.Popen(
@@ -775,16 +776,16 @@ def run_job(job: Dict[str, Any], gpu_id: Optional[str] = None, logs_dir: str = "
 
     elapsed = time.time() - start_time
     if ret_code == 0:
-        print(f"[SUCCESS] Concluído em {elapsed:.1f}s")
+        print(f"[SUCCESS] Finished in {elapsed:.1f}s")
         return True
     else:
-        print(f"[FAILED] Erro com código {ret_code} (veja detalhes em {log_file})")
+        print(f"[FAILED] Exit code {ret_code} (see {log_file})")
         return False
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Orquestrador Python de experimentos para o BreakEvenNLP."
+        description="Experiment orchestrator for BreakEvenNLP."
     )
     parser.add_argument(
         "--script",
@@ -794,67 +795,67 @@ def main():
             "it-flan-t5", "it-mistral-zephyr", "it-modern",
             "prompting", "prompting-llama3", "prompting-modern"
         ],
-        help="Qual script de experimento executar (default: all)."
+        help="Experiment script to run (default: all)."
     )
     parser.add_argument(
         "--datasets",
         nargs="+",
         default=None,
         choices=["sst2", "boolq", "ag_news", "snips", "mrpc", "cola", "trec", "db_pedia"],
-        help="Filtrar por datasets específicos."
+        help="Run only these datasets."
     )
     parser.add_argument(
         "--models",
         nargs="+",
         default=None,
-        help="Filtrar por modelos específicos (ex: bert roberta llama3 flan-t5 mistral zephyr llama2)."
+        help="Run only these models (e.g. bert roberta qwen phi gemma llama3 flan-t5 mistral zephyr llama2)."
     )
     parser.add_argument(
         "--model-sizes",
         nargs="+",
         default=None,
-        help="Filtrar por tamanhos (ex: base 8b 4b 9b mini 12b)."
+        help="Run only these model sizes (e.g. base 8b 9b mini 12b)."
     )
     parser.add_argument(
         "--gpus",
         default=None,
         type=str,
-        help="ID da GPU a utilizar (ex: '0' ou '1'). Define CUDA_VISIBLE_DEVICES."
+        help="GPU ID to use (e.g. '0' or '1'); sets CUDA_VISIBLE_DEVICES."
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Apenas lista todos os comandos que seriam executados, sem rodá-los."
+        help="Only list the commands that would run, without running them."
     )
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Refaz as configurações selecionadas do zero: antes de rodar, move os resultados que já "
-             "existem para results_old/force_<data-hora>/, no mesmo caminho relativo. Se a execução "
-             "parar no meio, rode de novo sem --force para continuar de onde parou."
+        help="Rerun the selected configurations from scratch: before running, move their existing "
+             "results to results_old/force_<timestamp>/, under the same relative path. If the run "
+             "stops midway, run it again without --force to resume where it stopped."
     )
     parser.add_argument(
         "--logs-dir",
         default="logs",
         type=str,
-        help="Diretório onde os logs individuais serão salvos (default: logs/)."
+        help="Directory for the per-run logs (default: logs/)."
     )
     parser.add_argument(
         "--engine",
         default="hf",
         choices=["hf", "vllm"],
-        help="Motor de inferência do prompting/ICL repassado ao main.py (default: hf); o IT sempre avalia no HF."
+        help="Inference engine passed to main.py for prompting/ICL (default: hf); IT always evaluates on HF."
     )
     parser.add_argument(
         "--decoding",
         default="free",
         choices=["free", "guided"],
-        help="Decoding repassado ao main.py no prompting, ICL e IT; guided restringe a resposta aos nomes das classes."
+        help="Decoding passed to main.py for prompting, ICL and IT; guided restricts the answer to the class names."
     )
     parser.add_argument(
         "--no-group",
         action="store_true",
-        help="Um processo por configuração, sem agrupar prompting/ICL via --sweep."
+        help="One process per configuration, without grouping prompting/ICL through --sweep."
     )
 
     args = parser.parse_args()
@@ -886,30 +887,30 @@ def main():
 
     total_found = len(filtered_experiments)
     print(f"\n=======================================================")
-    print(f" BreakEvenNLP — Orquestrador de Experimentos")
-    print(f" Total de configurações encontradas: {total_found}")
+    print(f" BreakEvenNLP — Experiment Orchestrator")
+    print(f" Configurations found: {total_found}")
     print(f"=======================================================")
 
     if total_found == 0:
-        print("Nenhum experimento correspondeu aos filtros fornecidos.")
+        print("No experiment matches the given filters.")
         return
 
     pending, done = [], []
     for exp in filtered_experiments:
         (done if not args.force and is_already_completed(exp) else pending).append(exp)
     jobs = build_jobs(pending, group=not args.no_group)
-    print(f" Já concluídas: {len(done)} | Pendentes: {len(pending)} em {len(jobs)} processo(s)")
+    print(f" Already done: {len(done)} | Pending: {len(pending)} in {len(jobs)} process(es)")
 
     if args.dry_run:
-        print("\n[MODO DRY-RUN] Nenhum comando será executado.\n")
+        print("\n[DRY RUN] No command will be run.\n")
         for exp in done:
-            print(f"  [JÁ CONCLUÍDO] ({exp['script_origin']}) {exp['model']} | {exp['dataset']} | N={exp['num_labelled']}")
+            print(f"  [DONE] ({exp['script_origin']}) {exp['model']} | {exp['dataset']} | N={exp['num_labelled']}")
         if args.force:
-            for src, dst in results_to_set_aside(pending, "<data-hora>"):
-                print(f"  [SERÁ MOVIDO] {src} -> {dst}")
+            for src, dst in results_to_set_aside(pending, "<timestamp>"):
+                print(f"  [WILL MOVE] {src} -> {dst}")
         for idx, job in enumerate(jobs, 1):
-            print(f"\n{idx:3d}. [PENDENTE] {describe_job(job)}")
-            print(f"     Comando: {' '.join(job_command(job, args.logs_dir))}")
+            print(f"\n{idx:3d}. [PENDING] {describe_job(job)}")
+            print(f"     Command: {' '.join(job_command(job, args.logs_dir))}")
         return
 
     if args.force:
@@ -924,7 +925,7 @@ def main():
 
     for idx, job in enumerate(jobs, 1):
         print(f"\n-------------------------------------------------------")
-        print(f"Progresso: [{idx}/{len(jobs)}]")
+        print(f"Progress: [{idx}/{len(jobs)}]")
         ok = run_job(job, gpu_id=args.gpus, logs_dir=args.logs_dir)
         if "sweep" in job:
             # A group may fail partway: count per configuration.
@@ -937,8 +938,8 @@ def main():
             failed_count += 1
 
     print(f"\n=======================================================")
-    print(f" Execuções Concluídas!")
-    print(f" Sucesso: {success_count} | Pulados: {len(done)} | Falhas: {failed_count}")
+    print(f" Runs finished!")
+    print(f" Succeeded: {success_count} | Skipped: {len(done)} | Failed: {failed_count}")
     print(f"=======================================================\n")
 
 if __name__ == "__main__":
