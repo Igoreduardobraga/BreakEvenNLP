@@ -1,0 +1,52 @@
+{
+  "approach": "instruction_tuning",
+  "criterion": "min val_loss (best checkpoint), mean rank across datasets",
+  "bands": [
+    {
+      "name": "small",
+      "max_n": 100,
+      "probe_n": 100
+    },
+    {
+      "name": "medium",
+      "max_n": 1000,
+      "probe_n": 500
+    },
+    {
+      "name": "large",
+      "max_n": null,
+      "probe_n": 2500
+    }
+  ],
+  "datasets": [
+    "sst2",
+    "boolq",
+    "ag_news",
+    "snips"
+  ],
+  "lrs": [
+    2e-05,
+    5e-05,
+    0.0001,
+    0.0002,
+    0.0005
+  ],
+  "created": "2026-11-03T02:39:43",
+  "learning_rates": {
+    "gemma_12b": {
+      "large": 5e-05,
+      "medium": 5e-05,
+      "small": 2e-05
+    },
+    "phi_mini": {
+      "large": 5e-05,
+      "medium": 0.0001,
+      "small": 2e-05
+    },
+    "qwen_9b": {
+      "large": 2e-05,
+      "medium": 2e-05,
+      "small": 2e-05
+    }
+  }
+}
