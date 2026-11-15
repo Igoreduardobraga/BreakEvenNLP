@@ -1,5 +1,3 @@
-# main.py
-
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments, Trainer, DataCollatorForSeq2Seq, get_linear_schedule_with_warmup, EarlyStoppingCallback
 from datasets import Dataset
 from sample_pool import effective_num_labelled
@@ -44,25 +42,12 @@ def _require_it_deps():
 
 IT_MAX_LEN = 1024
 
-# Training budget of instruction tuning in optimizer steps, Flan-T5's former
-# cap (250 steps x 5 epochs). Every N up to 1000 still trains all its epochs
-# (1125 steps at most); larger N stop at the budget, but never before one full
-# epoch, so every labelled sample is seen. Five epochs at every N cost about
-# 126 h of training on Qwen 3.5 9B's grid alone.
+# Max IT optimizer steps per fold, but never less than one epoch.
 IT_STEP_BUDGET = 1250
 
-# Prompts per generate() call when HF evaluates a causal model, as instruction
-# tuning evaluates its adapter. On the 4090, 16 prompts (at most
-# _CausalLMAdapter.MAX_BATCH_TOKENS padded tokens per call) evaluate the IT
-# grid 1.6-1.8x faster than one at a time: 2-5x for zero-shot, less for the
-# long ICL prompts, whose prefill is already compute-bound.
+# Prompts per generate() call in HF evaluation of causal models.
 HF_EVAL_BATCH_SIZE = 16
 
-# LoRA targets of the causal models: every linear projection of the decoder
-# blocks. Qwen 3.5 puts three Gated DeltaNet layers (linear_attn: in_proj_qkv,
-# in_proj_z, in_proj_b, in_proj_a, out_proj) before each full-attention layer;
-# without their names LoRA reached the attention of only 8 of its 32 layers.
-# Phi-4 fuses q/k/v into qkv_proj and gate/up into gate_up_proj.
 IT_LORA_TARGETS = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'qkv_proj',
                    'in_proj_qkv', 'in_proj_z', 'in_proj_b', 'in_proj_a', 'out_proj',
                    'gate_proj', 'up_proj', 'down_proj', 'gate_up_proj']
@@ -157,8 +142,6 @@ def it_training_args(output_dir, factor_seeds, batch_size, learning_rate, num_ep
         lr_scheduler_type="linear",
         seed=factor_seeds['model_randomness'],
         data_seed=factor_seeds['sample_order'],
-        # PeftModel hides the labels argument from Trainer's signature check;
-        # without it eval_loss is never computed for early stopping.
         label_names=['labels'],
         **selection,
         **warmup_ratio_kwargs(0.1),
@@ -188,8 +171,7 @@ def completion_loss(model, inputs, num_items_in_batch=None):
     (loss, outputs).
     """
     labels = inputs['labels']
-    # Position t predicts token t+1: keep the positions that predict a
-    # completion token in any row of the batch.
+    # Position t predicts token t+1: keep positions predicting a completion token in any row.
     keep = (labels[:, 1:] != -100).any(0).nonzero().squeeze(1)
     outputs = model(input_ids=inputs['input_ids'], attention_mask=inputs['attention_mask'],
                     logits_to_keep=keep)
@@ -321,8 +303,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
     # Before loading this fold's model, so it also covers a fold that failed.
     release_it_fold_memory()
     LoraConfig, get_peft_model, prepare_model_for_kbit_training = _require_it_deps()
-    # LoRA weights are created on the GPU before the Trainer seeds anything:
-    # seed them per fold so a resumed run reproduces the same adapter.
+    # LoRA weights are created before the Trainer seeds the RNGs: seed them per fold.
     RNGController.seed_all(randomness_factor_seeds['model_initialisation'])
     dataset = InstructionTuningDataset(
         dataset_name=DATASET,
@@ -358,8 +339,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         model = prepare_model_for_kbit_training(model)
         model = get_peft_model(model, peft_config)
 
-    # Same formatter (and tokenizer/chat template) the evaluator uses, so the
-    # tuned prompt is exactly the evaluated zero-shot prompt.
+    # Same formatter (and tokenizer/chat template) the evaluator uses
     prompter = PromptFormatter(model_name=MODEL, prompt_format=PROMPT_FORMAT, tokenizer=tokenizer)
     pairs = prompter.format_instruction_tuning(
         dataset.context_samples,
@@ -368,9 +348,7 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
         custom_instruction=getattr(dataset, 'instructions', None)
     )
 
-    # Same validation rule as fine-tuning: the best checkpoint is picked only
-    # when the split is large enough to rank checkpoints; below that the
-    # final adapter, trained on all N samples, is kept.
+    # Same validation rule as fine-tuning
     train_idx, val_idx, select_best = split_train_val(
         dataset.train_targets, dataset.num_classes, randomness_factor_seeds['sample_order'],
         holdout_val=args.holdout_val == 1)
@@ -382,15 +360,12 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
     train_ds = Dataset.from_list(tokenize_it_pairs(train_pairs, tokenizer, seq2seq))
     val_ds   = Dataset.from_list(tokenize_it_pairs(val_pairs, tokenizer, seq2seq)) if val_pairs else None
 
-    # Every model, Flan-T5 included, trains under the same step budget.
     max_steps = it_train_steps(len(train_ds), BATCH_SIZE, NUM_EPOCHS)
     print(f"Instruction tuning: {len(train_ds)} training samples, {max_steps} steps "
           f"({max_steps / math.ceil(len(train_ds) / BATCH_SIZE):.2f} epochs)")
     training_args = it_training_args(investigation_path, randomness_factor_seeds, BATCH_SIZE,
                                      LEARNING_RATE, NUM_EPOCHS, seq2seq, select_best, max_steps)
 
-    # Pads input_ids/attention_mask with the tokenizer and labels with -100;
-    # with the T5 model it also builds decoder_input_ids from the labels.
     collator = DataCollatorForSeq2Seq(tokenizer, model=model if seq2seq else None,
                                       label_pad_token_id=-100, padding='longest')
 
@@ -408,13 +383,11 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
     trainer.train()
     val_metrics = {'val_loss': it_val_loss(trainer, select_best)} if val_ds is not None else {}
     if args.it_val_only:
-        # LR sweep: the choice uses only the validation loss, and the test
-        # generations would cost more than training the smaller bands.
+        # LR sweep: only the validation loss is needed, so skip the costly test generations.
         return EvaluationResult({'prompting': [], 'icl': []}, {'prompting': [], 'icl': []},
                                 {'prompting': [], 'icl': []}), val_metrics
 
-    # Keep the LoRA adapter unmerged: merging into 4-bit weights re-quantizes
-    # them and evaluates a different model than the one that was trained.
+    # Adapter kept unmerged: merging into 4-bit weights would re-quantize them.
     model = trainer.model
     model.eval()
     
@@ -441,11 +414,6 @@ def instruction_tuning_experiment(randomness_factor_seeds, model_name, tokenizer
 
     return EvaluationResult(golden, predicted, decoded, prompts=prompts, inputs=inputs), val_metrics
 
-# Early stopping needs a validation split large enough to rank epochs: below
-# FT_MIN_VAL_SAMPLES (10% of N, i.e. N < 250) the model trains every epoch on
-# all N labelled samples, as ICL uses all N. Instruction tuning picks its best
-# checkpoint under the same rule. With holdout_val the LR sweep still holds
-# out 10% in that regime, only to score the final model.
 FT_VAL_RATIO = 0.1
 FT_MIN_VAL_SAMPLES = 25
 
@@ -493,12 +461,8 @@ def make_train_val_loaders(dataset, batch_size, shuffle_seed, holdout_val=False)
     return train_loader, val_loader, early_stopping
 
 def ft_experiment(randomness_factor_seeds, train_test_indices=None):
-    # The encoder's internal dropout draws from the global RNG (only the head
-    # dropout has its own stream): seed it per fold with the model-randomness
-    # factor so each fold is reproducible on its own.
+    # The encoder's internal dropout draws from the global RNG
     RNGController.seed_all(randomness_factor_seeds['model_randomness'])
-    # DeBERTa-v3 uses SentencePiece: the fast tokenizer conversion drops byte
-    # fallback (unknown tokens instead of byte pieces), so use the slow one.
     tokenizer = AutoTokenizer.from_pretrained(
         model_name, return_dict=False, use_fast=(MODEL != 'deberta'))
     dataset = FineTuningDataset(
@@ -555,8 +519,7 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
             optimizer.step()
             scheduler.step()
 
-        # Without a validation split there is no signal for early stopping:
-        # train every epoch and keep the final weights.
+        # No validation split: train every epoch and keep the final weights.
         if len(valloader.dataset) == 0:
             continue
 
@@ -611,8 +574,6 @@ def ft_experiment(randomness_factor_seeds, train_test_indices=None):
             _, predicted = torch.max(outputs.data, 1)
             predictions.extend(predicted.tolist())
             golden.extend(targets.tolist())
-    # Validation metrics of the returned model (best epoch, or the final one
-    # without early stopping), used to pick the learning rate (run_lr_sweep.py).
     val_metrics = {}
     if best_val != float('inf'):
         val_metrics = {'val_loss': float(best_val), 'val_f1_macro': float(best_val_f1)}
@@ -634,8 +595,6 @@ ICL_MODELS = {
     'qwen_4b': 'Qwen/Qwen3.5-4B',
     'qwen_9b': 'Qwen/Qwen3.5-9B',
     'phi_mini': 'microsoft/Phi-4-mini-instruct',
-    # The dense 12B: the 26B A4B MoE does not fit the 4090, since bitsandbytes
-    # leaves its experts in bf16 (43 GiB) and vLLM's bitsandbytes loader fails on them.
     'gemma_12b': 'google/gemma-4-12B-it',
 }
 
@@ -646,13 +605,11 @@ def main():
         NUM_EPOCHS, LEARNING_RATE, ENGINE, DECODING, RESULTS_PATH, \
         model, tokenizer, model_name, vllm_evaluator
     parser = argparse.ArgumentParser()
-    # Meta
     parser.add_argument('--experiment_name', default='investigation_experiments', type=str, help='Directory to save experiments to')
     parser.add_argument('--configuration_name', default='stability', type=str, help='Further distinction for the save directory')
     parser.add_argument('--experiment_type', default='icl', type=str, choices=['finetuning', 'prompting', 'icl', 'icl_similarity', 'instruction_tuning', 'instruction_tuning_steps'], help='Type of experiment to run')
     parser.add_argument('--full_test', default=1, type=int, help='Whether to use whole test dataset (Yes (default): 1; No: 0). If "No" and "num_labelled_test" is not set then uses same number of labelled samples as defined by num_labelled')
     parser.add_argument('--regenerate', default=0, type=int, help='Whether to calculate every result again or continue from checkpoint (Yes: 1; No (default): 0).')
-    # General training args
     parser.add_argument('--factor', default='golden_model', type=str, choices=['golden_model', 'data_split', 'label_choice', 'sample_choice', 'sample_order', 'model_initialisation', 'model_randomness'], help='Randomness factor to investigate.')
     parser.add_argument('--num_shots', default=4, type=int, help='Number of samples to use as in-context examples in in-context learning or in different tasks in meta-learning.')
     parser.add_argument('--dataset', default='sst2', type=str, choices=['sst2', 'mrpc', 'cola', 'rte', 'boolq', 'trec', 'ag_news', 'db_pedia', 'snips'], help='Dataset to use for investigation.')
@@ -669,7 +626,6 @@ def main():
     parser.add_argument('--prompt_format', default=0, type=int, help='Which prompt format to use')
     parser.add_argument('--engine', default='hf', type=str, choices=['hf', 'vllm'], help='Inference engine for prompting/icl (vllm: offline vLLM, causal models only)')
     parser.add_argument('--decoding', default='free', type=str, choices=['free', 'guided'], help='Decoding constraint: guided restricts the answer to the class names (vLLM structured outputs, or token masking on HF)')
-    # K Fold
     parser.add_argument('--rskf_splits', default=10, type=int, help='Number of folds for RepeatedStratifiedKFold (K).')
     parser.add_argument('--rskf_repeats', default=1, type=int, help='Number of repeats for RepeatedStratifiedKFold (R).')
     parser.add_argument('--rskf_seed', default=27, type=int, help='Random state for RepeatedStratifiedKFold.')
@@ -721,14 +677,10 @@ def main():
         model_name = ICL_MODELS[f'{MODEL}_{MODEL_SIZE}']
 
         if ENGINE == 'vllm':
-            # Weights load inside _VLLMAdapter; keep only the HF id here so a
-            # second copy never sits in VRAM. Fail fast for unsupported families.
             if ModelEvaluator._causal_family_for(MODEL) is None:
                 parser.error(f"--engine vllm supports causal families only, not '{MODEL}'")
             model = None
             tokenizer = None
-            # Load once, outside the timed folds (like the HF models below):
-            # rebuilding per fold reloads the weights and can leak VRAM.
             vllm_evaluator = ModelEvaluator(
                 model=model_name,
                 tokenizer=None,
@@ -789,8 +741,6 @@ def main():
         except Exception:
             if len(configurations) == 1:
                 raise
-            # One bad configuration must not cost the rest of the sweep the
-            # model load; its finished folds are kept and it resumes on rerun.
             traceback.print_exc()
             failed.append(config)
     if failed:
@@ -962,7 +912,6 @@ def run_configuration(config):
                 np.bincount(all_targets[train_idx], minlength=len(all_classes))),
         )
       
-        # Clean checkpoints  
         if EXPERIMENT_TYPE in ['instruction_tuning', 'instruction_tuning_steps']:
             try:
                 for item_name in os.listdir(fold_path):

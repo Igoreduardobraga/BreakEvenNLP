@@ -42,8 +42,6 @@ class TestTrainValSplit(unittest.TestCase):
 class TestQuantizationConfig(unittest.TestCase):
 
     def test_hf_models_load_in_nf4_with_bf16_compute(self):
-        # One setup for prompting, ICL and IT, matching vLLM's NF4: the bare
-        # load_in_4bit kwarg gave FP4 with float32 compute.
         import torch
         cfg = main.bnb_4bit_config()
         self.assertTrue(cfg.load_in_4bit)

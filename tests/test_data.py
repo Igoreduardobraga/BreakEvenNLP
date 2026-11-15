@@ -1,4 +1,3 @@
-# tests/test_data.py
 """
 The class names data.py gives each dataset (what the LLMs read, ICL shots and
 IT targets) must be the prompter's, in the label order of the Hub dataset.

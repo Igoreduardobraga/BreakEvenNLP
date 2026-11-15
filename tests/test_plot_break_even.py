@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pandas as pd
 
-# The plots run from .venv; .venv-vllm has no matplotlib.
 HAS_MATPLOTLIB = importlib.util.find_spec("matplotlib") is not None
 if HAS_MATPLOTLIB:
     from analysis import plot_break_even as pbe
@@ -68,13 +67,12 @@ class TestManyModelsPerApproach(unittest.TestCase):
         self.assertEqual(qwen.get_color(), pbe.APPROACH_COLOR["icl"])
         self.assertNotEqual(qwen.get_marker(), phi.get_marker())
         self.assertEqual(by_prefix("Instruction Tuning + ICL (Qwen)").get_color(),
-                         pbe.APPROACH_COLOR["instruction_tuning_icl"])  # purple
+                         pbe.APPROACH_COLOR["instruction_tuning_icl"])
 
     def test_only_the_best_model_of_each_approach_is_emphasised(self):
         lines = self._plot(detailed=True)
         best = [label for label, ln in lines.items() if ln.get_linewidth() > 2]
         self.assertEqual(sorted(best), sorted(label for label in lines if label.endswith("\u2605")))
-        # the best fine-tuning is DeBERTa and the best prompting is Phi (highest means in _agg)
         self.assertIn("Fine-tuning (DeBERTa) \u2605", best)
         self.assertIn("Prompting (Phi) \u2605", best)
         self.assertEqual(len(best), 5)  # one per approach: FT, prompting, ICL, IT, IT + ICL

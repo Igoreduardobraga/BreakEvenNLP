@@ -1,4 +1,3 @@
-# tests/test_sample_pool.py
 """
 Unit tests for the deep SamplePool module.
 Tests dataset partitioning, stratified budget selection, and reproducibility
@@ -13,11 +12,9 @@ class TestSamplePoolPartitioning(unittest.TestCase):
     """Tests train/test partitioning and stratified label selection."""
 
     def setUp(self):
-        # 10 samples: 5 negative (0), 5 positive (1)
         self.texts = tuple([f"Sentence {i}" for i in range(10)])
         self.targets = tuple([0, 1, 0, 1, 0, 1, 0, 1, 0, 1])
         self.classes = ("negative", "positive")
-        # 8 train indices (4 of class 0, 4 of class 1), 2 test indices
         self.train_test_indices = ([0, 1, 2, 3, 4, 5, 6, 7], [8, 9])
 
     def test_partitioning_from_indices(self):
@@ -95,7 +92,6 @@ class TestSamplePoolDemonstrationsAndBatching(unittest.TestCase):
     """Tests few-shot demonstration sampling and batch evaluation."""
 
     def setUp(self):
-        # 20 samples: 10 of class 0, 10 of class 1
         self.texts = tuple([f"Text {i}" for i in range(20)])
         self.targets = tuple([0, 1] * 10)
         self.classes = ("negative", "positive")
@@ -137,11 +133,9 @@ class TestSamplePoolDemonstrationsAndBatching(unittest.TestCase):
     def test_batch_data_for_evaluation(self):
         batches = list(self.pool.batch_data_for_evaluation(batch_size=2, split="test"))
         self.assertEqual(len(batches), 2)
-        # Batch 1
         data1, labels1 = batches[0]
         self.assertEqual(len(data1), 2)
         self.assertEqual(len(labels1), 2)
-        # Batch 2
         data2, labels2 = batches[1]
         self.assertEqual(len(data2), 2)
         self.assertEqual(len(labels2), 2)
@@ -402,7 +396,6 @@ class TestEffectiveNumLabelled(unittest.TestCase):
 
     def test_a_class_that_runs_out_contributes_only_what_it_has(self):
         from sample_pool import effective_num_labelled
-        # BoolQ-like: 10000 asks 5000 per class, the minority has 4311
         self.assertEqual(effective_num_labelled(10000, 2, [4311, 7116]), 9311)
         self.assertEqual(effective_num_labelled(100, 2, [4311, 7116]), 100)
 

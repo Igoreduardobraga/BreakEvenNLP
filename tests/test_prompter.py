@@ -1,4 +1,3 @@
-# tests/test_prompter.py
 """
 Unit tests for the deep PromptFormatter module.
 Tests core task catalog, zero-shot prompting across all model families,
@@ -184,9 +183,6 @@ class TestPromptFormatterFewShotICL(unittest.TestCase):
         self.assertIn("<|start_header_id|>user<|end_header_id|>\n\nText: Great movie!<|eot_id|>", prompt)
 
     def test_demonstrations_are_formatted_like_the_query(self):
-        # A demonstration's user turn must be exactly the query's turn for the
-        # same text, edge whitespace included (every GLUE SST-2 text ends in a
-        # space). BoolQ has no sentence prefix, which used to differ too.
         tok = MagicMock()
         tok.apply_chat_template.side_effect = lambda messages, **kw: messages
         for family in ("qwen", "llama3", "phi", "gemma", "mistral", "zephyr"):

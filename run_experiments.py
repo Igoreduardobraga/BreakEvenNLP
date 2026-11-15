@@ -29,16 +29,10 @@ from typing import List, Dict, Any, Optional, Tuple
 
 from result_store import experiment_dir_name
 
-# Conjunto de teste comum a todas as abordagens: subconjunto estratificado
-# de 1000 amostras do fold, escolhido pela seed label_choice. Para o mesmo
-# fold e seed, FT, IT, prompting e ICL avaliam exatamente as mesmas amostras.
-# (Os .sh em legacy/ avaliavam FT/IT no fold inteiro.)
+# Same stratified 1000-sample test subset per fold for every approach.
 TEST_SET_ARGS = ["--full_test", "0", "--num_labelled_test", "1000"]
 
-# Demonstrações por classe no ICL. Depois do treino o IT também é avaliado
-# com ICL (f1_macro_icl) e usa o mesmo número, para que IT + ICL e ICL
-# difiram só pelo treino. (Os .sh em legacy/ deixavam o IT no default 4 do
-# main.py.)
+# ICL shots per class, also used by IT + ICL so it differs from ICL only by the tuning.
 ICL_SHOTS_ARGS = ["--num_shots", "2"]
 
 DATASET_CONFIGS = {
@@ -88,12 +82,7 @@ def get_finetuning_batch_size(n: int) -> int:
         return 32
 
 
-# Learning rate do fine-tuning por modelo e faixa de N, escolhida pela
-# validacao em run_lr_sweep.py. Cada faixa e (nome, maior N da faixa, N usado
-# na varredura). A faixa pequena varre em N=100 porque com N=50 o split de
-# validacao (10%) fica menor que o numero de classes no SNIPS. Na grade, N<250
-# treina sem early stopping com todo o N; na varredura essa faixa separa 10%
-# so para medir o modelo final (--holdout_val 1).
+# Fine-tuning LR per model and N band, chosen by run_lr_sweep.py.
 FT_LR_FILE = "ft_learning_rates.json"
 FT_LR_BANDS = [("small", 100, 100), ("medium", 1000, 500), ("large", None, 2500)]
 DEFAULT_FT_LR = 1e-5
@@ -531,11 +520,7 @@ def generate_prompting_modern_commands() -> List[Dict[str, Any]]:
 
 IT_MODERN_MODELS = [("qwen", "9b"), ("phi", "mini"), ("gemma", "12b")]
 
-# Learning rate do LoRA dos modelos novos por modelo e faixa de N (as mesmas
-# faixas do FT), escolhida pela validacao em run_lr_sweep.py --approach
-# instruction_tuning. Sem escolha vale DEFAULT_IT_LR, a LR usual do QLoRA. Os
-# .sh em legacy/ usavam 1e-5, LR de full fine-tuning: com os poucos passos
-# dos N pequenos (65 em N=50) o adapter mal saia do zero.
+# IT LoRA LR per model and N band, chosen by run_lr_sweep.py
 IT_LR_FILE = "it_learning_rates.json"
 DEFAULT_IT_LR = 2e-4
 
@@ -673,12 +658,9 @@ def results_to_set_aside(experiments: List[Dict[str, Any]], stamp: str) -> List[
     return moves
 
 
-# Tipos que carregam o modelo uma vez por processo: agrupar seus comandos
-# num unico main.py --sweep evita recarregar os pesos a cada (dataset, N).
-# FT e IT recriam o modelo a cada fold, entao nao ganham nada.
 GROUPABLE_TYPES = ("prompting", "icl", "icl_similarity")
 
-# Flags que variam dentro de um grupo; as demais tem de ser identicas.
+# Flags that may differ within a group; all others must match.
 SWEEP_FLAGS = {
     "--dataset": ("dataset", str),
     "--num_labelled": ("num_labelled", int),
@@ -877,7 +859,6 @@ def main():
 
     args = parser.parse_args()
 
-    # 1. Coleta os comandos originais
     all_experiments: List[Dict[str, Any]] = []
     if args.script == "all":
         for script_name, generator in SCRIPTS_MAP.items():
@@ -885,7 +866,6 @@ def main():
     else:
         all_experiments.extend(SCRIPTS_MAP[args.script]())
 
-    # 2. Aplica filtros se especificados
     filtered_experiments = []
     for exp in all_experiments:
         if args.datasets and exp["dataset"] not in args.datasets:
@@ -900,7 +880,6 @@ def main():
             exp["engine"] = args.engine
             exp["decoding"] = args.decoding
         elif exp["experiment_type"] in ("instruction_tuning", "instruction_tuning_steps"):
-            # O modelo treinado é avaliado no HF, que também restringe o decoding.
             exp["cmd_args"] = list(exp["cmd_args"]) + ["--decoding", args.decoding]
             exp["decoding"] = args.decoding
         filtered_experiments.append(exp)
@@ -915,7 +894,6 @@ def main():
         print("Nenhum experimento correspondeu aos filtros fornecidos.")
         return
 
-    # 3. Separa concluídos e agrupa os pendentes em jobs
     pending, done = [], []
     for exp in filtered_experiments:
         (done if not args.force and is_already_completed(exp) else pending).append(exp)
@@ -934,10 +912,8 @@ def main():
             print(f"     Comando: {' '.join(job_command(job, args.logs_dir))}")
         return
 
-    # 4. Execução real
     if args.force:
-        # Move tudo antes do primeiro job: se a execução parar no meio, o que
-        # faltar continua pendente para uma nova rodada sem --force.
+        # Move everything first, so an interrupted run resumes without --force.
         for src, dst in results_to_set_aside(pending, time.strftime("%Y%m%d-%H%M%S")):
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.move(src, dst)
@@ -951,7 +927,7 @@ def main():
         print(f"Progresso: [{idx}/{len(jobs)}]")
         ok = run_job(job, gpu_id=args.gpus, logs_dir=args.logs_dir)
         if "sweep" in job:
-            # O processo de um grupo pode falhar em parte: conta por configuração.
+            # A group may fail partway: count per configuration.
             finished = sum(is_already_completed(m) for m in job["members"])
             success_count += finished
             failed_count += len(job["members"]) - finished

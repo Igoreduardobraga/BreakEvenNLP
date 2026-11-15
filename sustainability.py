@@ -280,7 +280,6 @@ class SustainabilityTracker:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
-    # -- source selection -------------------------------------------------
     def _setup_sources(self) -> None:
         selectors = _visible_gpus(self.gpu_count)
         self._nvml = None
@@ -336,7 +335,6 @@ class SustainabilityTracker:
         while not self._stop_event.wait(self.sample_seconds):
             self._sample_all()
 
-    # -- public API -------------------------------------------------------
     def start(self) -> "SustainabilityTracker":
         self._report = None
         self._setup_sources()

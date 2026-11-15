@@ -1,4 +1,3 @@
-# prompter.py
 """
 Deep PromptFormatter module for BreakEvenNLP.
 Encapsulates task instructions, options, few-shot ICL formatting,
@@ -31,11 +30,6 @@ class PromptFormatter:
         ),
     }
 
-    # What each SNIPS intent asks for, spelled out in its instruction. With
-    # the short names alone the LLMs sent most "Creative Work" and "Playlist"
-    # commands to "Music"; with these, the mean macro-F1 of Qwen 3.5 9B,
-    # Phi-4-mini and Gemma 4 12B (zero-shot and ICL) went from 0.844 to 0.956
-    # on samples outside every test subset of the grid.
     SNIPS_INTENTS = {
         "Playlist": "add a song, artist or album to a playlist",
         "Weather": "ask about the weather or the forecast",
@@ -235,9 +229,7 @@ class PromptFormatter:
             for t in texts
         ]
 
-    # Token that closes the assistant turn in each family's chat format; the
-    # evaluator stops generation on these. Seq2seq targets get </s> from the
-    # tokenizer itself.
+    # Token that closes the assistant turn in each family's chat format
     END_OF_TURN = {
         "qwen": "<|im_end|>",
         "phi": "<|end|>",

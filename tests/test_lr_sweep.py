@@ -84,7 +84,7 @@ class TestItLearningRate(unittest.TestCase):
         self.assertEqual((_flag(small, "--model"), _flag(small, "--model_size")), ("qwen", "9b"))
         self.assertEqual(_flag(small, "--configuration_name"), "lr_0.0001_num_samples_100")
         self.assertEqual(_flag(small, "--rskf_splits"), str(sweep.IT_SWEEP_SPLITS))
-        self.assertEqual(small["rskf_splits"], sweep.IT_SWEEP_SPLITS)  # what is_already_completed counts
+        self.assertEqual(small["rskf_splits"], sweep.IT_SWEEP_SPLITS)
         self.assertEqual(_flag(small, "--holdout_val"), "1")
         self.assertEqual(_flag(small, "--it_val_only"), "1")
         self.assertEqual(_flag(small, "--results_root"), "results_it_lr_sweep")

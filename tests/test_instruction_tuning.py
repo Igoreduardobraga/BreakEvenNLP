@@ -70,8 +70,6 @@ class TestITTrainSteps(unittest.TestCase):
         self.assertEqual(it_train_steps(9000, 4, 5), 2250)  # N=10000: one epoch
 
     def test_steps_are_a_multiple_of_the_evaluations(self):
-        # SNIPS N=15000: 11731 samples, one epoch of 2933 steps, rounded up so
-        # the fifth evaluation falls on the last step.
         self.assertEqual(it_train_steps(11731, 4, 5), 2935)
 
 
@@ -83,8 +81,6 @@ class TestITTrainingArgs(unittest.TestCase):
                                 max_steps=200)
 
     def test_trainer_follows_the_fold_seeds(self):
-        # The Trainer reseeds on creation; with its default seed (42) every
-        # fold would share batch order and dropout.
         args = self._args(select_best=True)
         self.assertEqual(args.seed, SEEDS['model_randomness'])
         self.assertEqual(args.data_seed, SEEDS['sample_order'])
@@ -97,8 +93,6 @@ class TestITTrainingArgs(unittest.TestCase):
         best = self._args(select_best=True)
         self.assertEqual(best.max_steps, 200)
         self.assertTrue(best.load_best_model_at_end)
-        # num_epochs evaluations evenly spaced: once per epoch when every
-        # epoch trains.
         self.assertEqual(best.eval_strategy, "steps")
         self.assertEqual(best.eval_steps, 40)
         self.assertEqual(best.save_steps, 40)
@@ -127,8 +121,6 @@ class TestITValidationSplit(unittest.TestCase):
         self.assertEqual(len(set(train) | set(val)), len(targets))
 
     def test_sweep_holdout_scores_a_small_pool_without_selecting_epochs(self):
-        # The LR sweep's small band (N=100): 10% held out only to score the
-        # final adapter, as in fine-tuning.
         targets = [0, 1] * 50
         train, val, select_best = split_train_val(targets, 2, seed=1, holdout_val=True)
         self.assertFalse(select_best)
@@ -187,7 +179,6 @@ class TestCompletionLoss(unittest.TestCase):
             summed, _ = completion_loss(model, batch, num_items_in_batch=(batch['labels'] != -100).sum())
         torch.testing.assert_close(loss, expected)
         torch.testing.assert_close(summed, expected)
-        # 8 of the 10 positions predict a completion token in some row.
         self.assertEqual(outputs.logits.shape, (3, 8, config.vocab_size))
 
     def test_llama(self):
@@ -203,8 +194,6 @@ class TestCompletionLoss(unittest.TestCase):
             self.skipTest("transformers without Qwen 3.5")
         import importlib.util
         import torch
-        # With flash-linear-attention installed, transformers runs the DeltaNet
-        # layers on its Triton kernels, which need a GPU.
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         if device == 'cpu' and importlib.util.find_spec('fla') is not None:
             self.skipTest("flash-linear-attention kernels need a GPU")

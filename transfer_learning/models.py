@@ -1,10 +1,7 @@
-# transfer_learning/models.py
-
 import os
 import sys
 import random
 
-# Import deep RNG module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from rng import RNGController, RNGStream, RNGSnapshot
 
@@ -140,9 +137,6 @@ class DeBERTaBase(nn.Module, DeterministicModel):
             if not trainable:
                 for param in self.deberta.parameters():
                     param.requires_grad = False
-            # DeBERTa has no pretrained pooler; like DebertaV2ForSequenceClassification
-            # (ContextPooler), add dense + GELU on [CLS] so the head matches the
-            # dense + tanh pooler BERT/RoBERTa feed into their classifier.
             config = self.deberta.config
             pooler_size = getattr(config, 'pooler_hidden_size', config.hidden_size)
             self.pooler = torch.nn.Linear(config.hidden_size, pooler_size)
@@ -158,7 +152,6 @@ class DeBERTaBase(nn.Module, DeterministicModel):
         if token_type_ids is not None:
             kwargs['token_type_ids'] = token_type_ids
         outputs = self.deberta(**kwargs)
-        # Extract [CLS] token representation at position 0
         cls_output = outputs[0][:, 0, :]
         pooled = torch.nn.functional.gelu(self.pooler(cls_output))
         with self.dropout_stream:

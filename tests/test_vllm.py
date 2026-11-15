@@ -120,7 +120,6 @@ class TestVLLMAdapter(unittest.TestCase):
         golden, predicted, decodeds = ev.evaluate(DummyDataset(), mode="icl", decoding="guided")
         self.assertEqual(predicted, [1, 0])
         _, params = FakeLLM.last_instance.calls[-1]
-        # vLLM >= 0.10: guided decoding is expressed via structured_outputs.choice
         self.assertIn("structured_outputs", params.extra)
         self.assertEqual(params.extra["structured_outputs"].choice, ["negative", "positive"])
         self.assertNotIn("guided_choice", params.extra)
@@ -170,9 +169,6 @@ class TestVLLMAdapter(unittest.TestCase):
             self.assertGreaterEqual(b["max_model_len"], 1024)
 
     def test_budgets_hold_the_longest_icl_prompts(self):
-        # vLLM aborts the fold on a prompt over max_model_len. Longest measured
-        # DBpedia ICL prompts (2 shots per class): ~3.3k tokens for Llama2/
-        # Mistral/Zephyr, ~4.4k Phi, ~4.8k Gemma.
         from evaluator import _VLLMAdapter
         longest = {"llama2": 3300, "mistral": 3300, "zephyr": 3300, "qwen": 4400,
                    "phi": 4400, "gemma": 4800}

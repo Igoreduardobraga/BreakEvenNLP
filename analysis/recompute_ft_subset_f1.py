@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
-"""Recalcula o F1 do fine-tuning no conjunto de teste comum (subconjunto
-estratificado de 1000 amostras por fold) a partir das predicoes ja salvas.
+"""Recomputes the fine-tuning F1 on the common test set (a stratified
+1000-sample subset per fold) from the saved predictions.
 
-Rodadas de FT antigas foram avaliadas no fold de teste inteiro, enquanto
-prompting/ICL usam o subconjunto escolhido pela seed label_choice
-(TEST_SET_ARGS em run_experiments.py). Este script reconstroi esse
-subconjunto e recalcula o F1 sem treinar nada.
+Old FT runs were evaluated on the whole test fold, while prompting/ICL use the
+subset chosen by the label_choice seed (TEST_SET_ARGS in run_experiments.py).
+This script rebuilds that subset and recomputes the F1 without training.
 
-Verificacoes (abortam se falharem):
-- a ordem de `real` no results.json bate com o fold reconstruido pelo RSKF;
-- o subconjunto reconstruido e identico ao avaliado pelo prompting, quando
-  houver predictions.parquet de prompting nos diretorios informados.
+Checks (abort on failure):
+- the order of `real` in results.json matches the fold rebuilt by the RSKF;
+- the rebuilt subset is identical to the one prompting evaluated, when the
+  given directories hold prompting predictions.parquet files.
 
-Saida: CSV com uma linha por fold (f1_full, f1_subset e tamanhos).
+Output: a CSV with one row per fold (f1_full, f1_subset and sizes).
 
-Uso:
+Usage:
     .venv/bin/python analysis/recompute_ft_subset_f1.py \
         [--results-dirs results results_legacy] \
         [--out analysis/figures/ft_subset_f1.csv] [--num-test 1000]
@@ -55,8 +54,7 @@ def dataset(ds):
 
 @lru_cache(None)
 def splits(ds, n_splits, n_repeats):
-    # As particoes de um repeat nao dependem de n_repeats (mesma sequencia de
-    # RNG), entao basta n_repeats >= repeat+1 para reproduzir qualquer fold.
+    # A repeat's partitions do not depend on n_repeats, so any n_repeats > repeat reproduces it.
     _, y, _ = dataset(ds)
     rskf = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=n_repeats, random_state=RSKF_SEED)
     return list(rskf.split(np.zeros(len(y)), y))
@@ -64,7 +62,7 @@ def splits(ds, n_splits, n_repeats):
 
 @lru_cache(None)
 def subset(ds, n_splits, n_repeats, split_idx, label_seed, num_test):
-    """(posicoes do subconjunto dentro do fold inteiro, rotulos na ordem avaliada)."""
+    """(positions of the subset inside the whole fold, labels in evaluated order)."""
     texts, y, classes = dataset(ds)
     train_idx, test_idx = splits(ds, n_splits, n_repeats)[split_idx]
     pool = SamplePool(ds, (list(train_idx), list(test_idx)), num_labelled=0,
@@ -79,7 +77,7 @@ def f1(y_true, y_pred):
 
 
 def verify_against_prompting(results_dirs, num_test):
-    """O subconjunto reconstruido tem de ser exatamente o que o prompting avaliou."""
+    """The rebuilt subset must be exactly the one prompting evaluated."""
     checked = 0
     for root in results_dirs:
         for p in glob.glob(f"{root}/prompting/*/*/*/golden_model/predictions.parquet"):
@@ -145,7 +143,7 @@ def main():
     ap.add_argument("--results-dirs", nargs="+", default=["results", "results_legacy"])
     ap.add_argument("--out", default="analysis/figures/ft_subset_f1.csv")
     ap.add_argument("--num-test", type=int, default=1000,
-                    help="tamanho do subconjunto de teste (igual a --num_labelled_test)")
+                    help="test subset size (same as --num_labelled_test)")
     args = ap.parse_args()
 
     dirs = [d for d in args.results_dirs if os.path.isdir(d)]

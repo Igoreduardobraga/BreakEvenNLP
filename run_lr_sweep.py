@@ -1,28 +1,23 @@
 #!/usr/bin/env python3
-"""Varredura de learning rate do fine-tuning ou do instruction tuning, uma LR
-por modelo e faixa de N.
+"""Learning-rate sweep of fine-tuning or instruction tuning: one LR per model
+and N band.
 
-Para cada modelo, faixa de N (FT_LR_BANDS em run_experiments.py), dataset e
-LR, roda o repeat 0 do RSKF no N representativo da faixa. A LR escolhida e a
-de menor val_loss (10% do treino), pelo rank medio entre datasets. Nas faixas
-com early stopping e o val_loss do melhor epoch; na faixa pequena, que na grade
-treina sem early stopping, e o val_loss do modelo final num holdout de 10%. O F1 de teste e salvo so para consulta: escolher
-por ele daria ao FT uma vantagem otimista sobre os LLMs.
+For each model, N band (FT_LR_BANDS in run_experiments.py), dataset and LR, it
+trains at the band's probe N and picks the LR with the lowest validation loss
+(10% of the training pool), by mean rank across datasets. The test F1 is kept
+for reference only: choosing by it would favour fine-tuning over the LLMs.
 
---approach instruction_tuning aplica o mesmo criterio a LR do LoRA dos modelos
-novos, com o val_loss da resposta (a loss do treino) e o melhor checkpoint, entre
-avaliacoes igualmente espacadas, no lugar do melhor epoch. Como cada passo custa
-muito mais que no FT, roda 2 folds por configuracao em vez do repeat inteiro e
-nao avalia no teste (--it_val_only): o F1 de teste nao entra na escolha, e as
-geracoes do teste, com e sem ICL, custariam mais que o treino nas faixas
-pequena e media.
+- finetuning: repeat 0 of the RSKF; val_loss of the best epoch, or of the
+  final model on a 10% holdout in the small band (no early stopping there).
+- instruction_tuning: the LoRA LR of the modern models; val_loss of the best
+  checkpoint, on 2 folds per configuration and without test generations
+  (--it_val_only), since each IT step costs far more.
 
-Os resultados vao para --results-root (results_lr_sweep/ no FT,
-results_it_lr_sweep/ no IT), separados da grade principal. A escolha e gravada
-em ft_learning_rates.json ou it_learning_rates.json, que run_experiments.py le
-nos scripts finetuning e it-modern.
+Results go to --results-root (results_lr_sweep/ or results_it_lr_sweep/) and
+the choice to ft_learning_rates.json or it_learning_rates.json, which
+run_experiments.py reads in the finetuning and it-modern scripts.
 
-Uso:
+Usage:
     uv run python run_lr_sweep.py [--approach finetuning|instruction_tuning]
         [--models bert roberta deberta | qwen_9b phi_mini ...]
         [--datasets sst2 boolq ag_news snips] [--lrs ...]
@@ -42,10 +37,7 @@ from run_experiments import (DATASET_CONFIGS, FT_LR_BANDS, FT_LR_FILE, IT_LR_FIL
 
 IT_MODELS = {it_lr_key(m, size): (m, size) for m, size in IT_MODERN_MODELS}
 
-# Por abordagem: modelos, LRs, raiz dos resultados, logs e arquivo da escolha.
-# O LoRA varre uma ordem de grandeza acima do full fine-tuning; 2e-5 entrou
-# porque 5e-5, a borda inferior, foi a escolha do Gemma 4 12B nas faixas media e
-# grande e do Qwen 3.5 9B nas faixas pequena e media.
+# IT's LR grid starts at 2e-5 because Gemma and Qwen picked the former lower edge, 5e-5.
 APPROACHES = {
     "finetuning": dict(
         models=["bert", "roberta", "deberta"], lrs=[1e-5, 2e-5, 3e-5, 5e-5],
@@ -57,7 +49,7 @@ APPROACHES = {
         criterion="min val_loss (best checkpoint), mean rank across datasets"),
 }
 
-# Folds por configuracao na varredura do IT: RSKF com 2 splits, repeat 0.
+# Folds per IT sweep configuration (repeat 0 of a 2-split RSKF).
 IT_SWEEP_SPLITS = 2
 
 
@@ -101,7 +93,7 @@ def load_sweep_results(exps):
 
 
 def select(table):
-    """Menor val_loss por dataset vira rank 1; vence a LR de menor rank medio."""
+    """Ranks the LRs by val_loss per dataset; the lowest mean rank wins (ties: lower val_loss)."""
     table = table.dropna(subset=["val_loss"]).copy()
     table["rank"] = table.groupby(["model", "band", "dataset"])["val_loss"].rank(method="min")
     score = (table.groupby(["model", "band", "lr"])
@@ -119,7 +111,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--approach", default="finetuning", choices=list(APPROACHES))
     ap.add_argument("--models", nargs="+", default=None,
-                    help="Default: todos os da abordagem (FT: bert roberta deberta; "
+                    help="Default: every model of the approach (FT: bert roberta deberta; "
                          "IT: qwen_9b phi_mini gemma_12b).")
     ap.add_argument("--datasets", nargs="+", default=["sst2", "boolq", "ag_news", "snips"],
                     choices=list(DATASET_CONFIGS))
@@ -131,7 +123,7 @@ def main():
     ap.add_argument("--gpus", default=None)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--select-only", action="store_true",
-                    help="So agrega o que ja rodou e grava a escolha.")
+                    help="Only aggregate the finished runs and write the choice.")
     args = ap.parse_args()
     defaults = APPROACHES[args.approach]
     for key in ("models", "lrs", "results_root", "logs_dir", "out"):
@@ -139,11 +131,11 @@ def main():
             setattr(args, key, defaults[key])
     unknown = sorted(set(args.models) - set(defaults["models"]))
     if unknown:
-        ap.error(f"--models {unknown} fora de {args.approach}: {defaults['models']}")
+        ap.error(f"--models {unknown} not in {args.approach}: {defaults['models']}")
 
     exps = sweep_experiments(args.models, args.datasets, args.lrs, args.results_root, args.approach)
     pending = [e for e in exps if not is_already_completed(e)]
-    print(f"Varredura: {len(exps)} configuracoes, {len(pending)} pendentes")
+    print(f"Sweep: {len(exps)} configurations, {len(pending)} pending")
 
     if args.dry_run:
         for e in pending:
@@ -159,10 +151,10 @@ def main():
 
     table = load_sweep_results(exps)
     if table.empty:
-        sys.exit("nenhum resultado da varredura encontrado")
+        sys.exit("no sweep results found")
     missing = [e for e in exps if not is_already_completed(e)]
     if missing:
-        print(f"AVISO: {len(missing)} configuracoes incompletas; a escolha usa so o que terminou.")
+        print(f"WARNING: {len(missing)} incomplete configurations; the choice uses only finished ones.")
     chosen, score = select(table)
 
     os.makedirs(args.results_root, exist_ok=True)
@@ -183,7 +175,7 @@ def main():
             "created": datetime.now().isoformat(timespec="seconds"),
             "learning_rates": chosen,
         }, f, indent=2)
-    print(f"\nLR escolhida por modelo e faixa -> {args.out}")
+    print(f"\nChosen LR per model and band -> {args.out}")
     for m, bands in chosen.items():
         print(f"  {m}: " + ", ".join(f"{b}={lr:g}" for b, lr in bands.items()))
 

@@ -117,8 +117,6 @@ class TestParseResults(unittest.TestCase):
 class TestModelEvaluatorSeq2Seq(unittest.TestCase):
 
     def test_seq2seq_never_truncates_the_prompt(self):
-        # T5's tokenizer caps at 512 tokens from the right, which cut the test
-        # sample off long ICL prompts; the full prompt must reach the model.
         calls = []
 
         class RecordingTokenizer(DummyTokenizer):
@@ -231,7 +229,6 @@ class TestModelEvaluatorCausalLM(unittest.TestCase):
 
     def test_causallm_prompting_with_token_slicing(self):
         tokenizer = DummyCausalTokenizer()
-        # Mocking generation: sample 0 outputs [20] ('positive'), sample 1 outputs [21] ('negative')
         model = DummyCausalModel(generated_tokens_per_call=[[20], [21]])
         dataset = DummyDataset()
 
@@ -539,8 +536,6 @@ class TestChoiceConstraint(unittest.TestCase):
         self.assertEqual(c.allowed(_ids('pos', 'itive')), [0])
 
     def test_first_token_space_follows_decode(self):
-        # Byte-level BPE keeps the space of " positive", so it cannot open the
-        # answer; SentencePiece decode drops it, so it can.
         bpe = _ChoiceConstraint(VocabTokenizer(), ['positive'], end_ids=[0])
         spm = _ChoiceConstraint(VocabTokenizer(strip_start=True), ['positive'], end_ids=[0])
         self.assertNotIn(_ids(' positive')[0], bpe.allowed([]))

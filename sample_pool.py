@@ -1,4 +1,3 @@
-# sample_pool.py
 """
 Deep SamplePool module for BreakEvenNLP.
 Consolidates dataset loading, stratified partitioning, deterministic k-shot
@@ -32,9 +31,7 @@ def _deterministic_permute(elements: list, seed: int) -> list:
         return copy_el
 
 
-# BoolQ is stored as "Passage: ...\nQuestion: ..." (see data.py). A classifier
-# input truncated at max_len would cut the question off the end, so it is
-# encoded as the pair (question, passage) and only the passage is shortened.
+# BoolQ is encoded as the pair (question, passage) so truncation cuts only the passage.
 _PAIR_MARKERS = (("Passage: ", "\nQuestion: "),)
 
 
@@ -170,7 +167,6 @@ class SamplePool:
                     texts.append(self.train_text[idx])
                     labels.append(self.train_targets[idx])
 
-            # Reorder the combined sampled items
             paired = list(zip(texts, labels, new_train_indices))
             shuffled_paired = _deterministic_permute(paired, self.label_seed)
 

@@ -153,7 +153,7 @@ class ResultStore:
         """Determines the active summary file path based on format preference."""
         if self.storage_format == "parquet":
             try:
-                import pyarrow  # noqa: F401
+                import pyarrow
                 return self.results_path / "summary.parquet"
             except ImportError:
                 return self.results_path / "summary.csv"
@@ -161,7 +161,7 @@ class ResultStore:
             return self.results_path / "summary.csv"
         else:  # 'auto'
             try:
-                import pyarrow  # noqa: F401
+                import pyarrow
                 return self.results_path / "summary.parquet"
             except ImportError:
                 return self.results_path / "summary.csv"
@@ -171,7 +171,7 @@ class ResultStore:
         """Determines the active predictions file path based on format preference."""
         if self.storage_format == "parquet":
             try:
-                import pyarrow  # noqa: F401
+                import pyarrow
                 return self.results_path / "predictions.parquet"
             except ImportError:
                 return self.results_path / "predictions.csv"
@@ -179,19 +179,17 @@ class ResultStore:
             return self.results_path / "predictions.csv"
         else:  # 'auto'
             try:
-                import pyarrow  # noqa: F401
+                import pyarrow
                 return self.results_path / "predictions.parquet"
             except ImportError:
                 return self.results_path / "predictions.csv"
 
     def has_fold(self, repeat: int, fold: int) -> bool:
         """Checks if a fold has already been recorded."""
-        # 1. Check legacy json directory
         legacy_path = self.results_path / f"repeat_{repeat}_fold_{fold}" / "results.json"
         if legacy_path.exists():
             return True
 
-        # 2. Check summary table
         if self.summary_file.exists():
             if self.summary_file.suffix == ".csv":
                 with open(self.summary_file, "r", encoding="utf-8") as f:
@@ -238,7 +236,6 @@ class ResultStore:
                     pass
             return []
 
-        # Check if pandas is available and requested
         if as_dataframe:
             try:
                 import pandas as pd
@@ -258,7 +255,6 @@ class ResultStore:
             except ImportError:
                 pass
 
-        # Fallback to standard library list of dicts
         rows: List[Dict[str, Any]] = []
         if self.summary_file.suffix == ".csv":
             with open(self.summary_file, "r", encoding="utf-8") as f:
@@ -403,7 +399,6 @@ class ResultStore:
 
         self._atomic_append_summary(row, repeat=int(repeat), fold=int(fold))
 
-        # Build qualitative sample-level predictions
         pred_rows: List[Dict[str, Any]] = []
         if isinstance(real, (list, tuple)):
             for i in range(len(real)):

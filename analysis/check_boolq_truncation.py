@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Evidencia da correcao de truncagem do BoolQ no fine-tuning.
+"""Evidence for the BoolQ truncation fix in fine-tuning.
 
-Roda o mesmo fine-tuning do BoolQ duas vezes, nos mesmos folds e seeds:
-- pair: codificacao atual, par (pergunta, passage) cortando so o passage;
-- legacy: texto unico "Passage ... Question ..." cortado no fim, como antes
-  (a pergunta some em ~45% das amostras com max_len=128).
+Runs the same BoolQ fine-tuning twice, on the same folds and seeds:
+- pair: the current encoding, a (question, passage) pair that cuts only the
+  passage;
+- legacy: a single "Passage ... Question ..." text cut at the end, as before
+  (the question is lost in ~45% of the samples at max_len=128).
 
-A unica diferenca entre as variantes e a codificacao: o modo legacy roda o
-main.py no mesmo processo com sample_pool.split_text_pair desligado.
-Compara F1 de teste (subconjunto comum de 1000) fold a fold, com teste de
-Wilcoxon pareado. Retoma de onde parou: folds ja gravados sao pulados.
+The encoding is the only difference: legacy runs main.py in the same process
+with sample_pool.split_text_pair disabled. Compares the test F1 (common
+1000-sample subset) fold by fold with a paired Wilcoxon test. Resumes where it
+stopped: folds already saved are skipped.
 
-Uso (da raiz do repositorio):
+Usage (from the repository root):
     uv run python analysis/check_boolq_truncation.py \
         [--models roberta deberta] [--n 5000] [--lr 3e-5] [--gpus 0]
 """
@@ -34,7 +35,7 @@ VARIANTS = ("pair", "legacy")
 
 
 def worker(variant, main_args):
-    """Roda main.py neste processo; no modo legacy desliga a codificacao em par."""
+    """Runs main.py in this process; the legacy variant turns the pair encoding off."""
     import sample_pool
     if variant == "legacy":
         sample_pool.split_text_pair = lambda text: None
@@ -52,7 +53,7 @@ def run(args):
         for variant in VARIANTS:
             root = os.path.join(args.results_root, variant)
             exp = finetuning_experiment("boolq", model, args.n, args.lr, rskf_repeats=1, results_root=root)
-            main_args = exp["cmd_args"][2:]  # sem "python main.py"
+            main_args = exp["cmd_args"][2:]  # without "python main.py"
             log = Path(args.results_root) / "logs" / f"{model}_{variant}.log"
             log.parent.mkdir(parents=True, exist_ok=True)
             env = os.environ.copy()

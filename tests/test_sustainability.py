@@ -61,7 +61,7 @@ class TestEnergySources(unittest.TestCase):
         rapl = _RaplCpu(root)
         self.assertEqual(len(rapl.domains), 1)
         start = rapl.snapshot()
-        open(os.path.join(pkg, "energy_uj"), "w").write("100")  # wrapped past 1000
+        open(os.path.join(pkg, "energy_uj"), "w").write("100")
         self.assertAlmostEqual(rapl.joules_since(start), 200 / 1e6)
 
     def test_rapl_missing_raises(self):

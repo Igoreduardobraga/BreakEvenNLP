@@ -90,7 +90,6 @@ BREAK_EVEN_CONFIG = {
     "instruction_tuning_icl": {"color": "gray", "linestyle": (0, (3, 1, 1, 1, 1, 1))},
 }
 
-# Legend order by approach.
 APPROACH_ORDER = {
     "finetuning": 0,
     "icl": 1,
@@ -100,7 +99,6 @@ APPROACH_ORDER = {
     "instruction_tuning_icl": 4,
 }
 
-# Fixed colour per approach (tab10 C0-C4).
 APPROACH_COLOR = {
     "finetuning": "#1f77b4",
     "icl": "#ff7f0e",
@@ -181,9 +179,7 @@ def variant_of(engine, decoding) -> str:
 def train_fold_class_counts(ds: str):
     """Samples per class in a training fold (the stratified RSKF varies by +-1)."""
     try:
-        # Imported here: data pulls in torch and transformers (up to ~2 min to
-        # import on a cold network disk) and only results without a recorded
-        # N need it.
+        # Lazy: data imports torch/transformers (~2 min cold), only needed without a recorded N.
         from data import load_text_and_targets
         _, targets, classes = load_text_and_targets(ds, 0)
     except Exception as e:  # no network/cache: fall back to the formula without a cap
@@ -233,20 +229,15 @@ def load_all(results_dir: Path) -> pd.DataFrame:
     if not frames:
         raise SystemExit(f"nenhum summary.parquet em {results_dir}")
     full = pd.concat(frames, ignore_index=True)
-    # Each IT fold evaluates the trained model zero-shot and with ICL; the ICL
-    # evaluation becomes the instruction_tuning_icl approach.
+    # The ICL evaluation of each IT fold becomes the instruction_tuning_icl line.
     it_icl = full[full["experiment_type"].isin(IT_TYPES)].assign(experiment_type="instruction_tuning_icl")
     full = pd.concat([full, it_icl], ignore_index=True)
-    # The x axis uses the effective N: the pool takes ceil(N/classes) per class
-    # and a class that runs out contributes only what it has (SNIPS N=10 -> 14,
-    # BoolQ N=10000 -> ~9300). New results record the real value per fold
-    # (num_labelled_effective); old ones use the per-class estimate. The
-    # nominal N stays in n_nominal.
+    # x axis = effective N (ceil(N/classes) per class, capped by each class's size):
+    # recorded per fold in new results, estimated for old ones.
     full["n_nominal"] = full["configuration"].astype(str).str.extract(N_RE)[0].astype(int)
     recorded = (pd.to_numeric(full["num_labelled_effective"], errors="coerce")
                 if "num_labelled_effective" in full.columns else pd.Series(np.nan, index=full.index))
-    # The estimate loads the datasets (~4 s each), so only rows without a
-    # recorded value pay for it, once per (dataset, N).
+    # The estimate loads the dataset: only for rows without a recorded N, once per (dataset, N).
     missing = full.loc[recorded.isna(), ["dataset", "n_nominal"]].drop_duplicates()
     estimates = {(ds, n): estimate_effective_n(n, ds) for ds, n in missing.itertuples(index=False)}
     estimated = pd.Series([estimates.get((ds, n)) for ds, n in zip(full["dataset"], full["n_nominal"])],
@@ -311,7 +302,6 @@ def find_intersection(x1, y1, x2, y2):
     x2, y2 = np.array(x2, dtype=float), np.array(y2, dtype=float)
     if len(x1) < 2 or len(x2) < 2:
         return None
-    # drop NaN and sort
     m1 = np.isfinite(x1) & np.isfinite(y1) & (x1 > 0)
     m2 = np.isfinite(x2) & np.isfinite(y2) & (x2 > 0)
     x1, y1 = x1[m1], y1[m1]
@@ -363,13 +353,7 @@ def _series_for(g: pd.DataFrame, line: str):
 
 
 def plot_panel(ax, g: pd.DataFrame, legend_fontsize: int, detailed: bool = False) -> None:
-    # Curves in % (the CSV keeps fractions; only the plot converts).
-    # detailed=False (--best-only and per-model panels): one line per approach,
-    # all "-" with "o", as in the POC I plots.
-    # detailed=True (several models per approach): the colour stays the
-    # approach's and the model becomes dash + marker (style_for); only the best
-    # model of each approach is thick and solid, with a band and a legend star,
-    # the others thin, faded and dashed per model.
+    # Curves in % (the CSV keeps fractions).
     best_lines = ({_best_line_of(g, exp) for exp in g["line"].map(exp_of).unique()}
                   if detailed else set())
     curve_handles = []
@@ -453,7 +437,7 @@ def plot_combined(agg: pd.DataFrame, out_dir: Path, dpi: int,
         ax = axes[idx]
         plot_panel(ax, agg[agg["dataset"] == ds], legend_fontsize=8 if detailed else 10,
                    detailed=detailed)
-        if idx // cols == rows - 1:  # only the bottom row has an xlabel
+        if idx // cols == rows - 1:
             ax.set_xlabel("Amostras rotuladas (log)")
         ax.set_title(ds.upper())
     for ax in axes[n:]:
@@ -548,7 +532,6 @@ def main() -> None:
     warn_incomplete(agg)
     if args.best_only:
         agg = filter_best(agg)
-    # Several models per approach: colour from the approach, dash/marker from the model.
     detailed = not args.best_only
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
     agg.to_csv(Path(args.out_dir) / "break_even_agg.csv", index=False)

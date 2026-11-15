@@ -105,8 +105,6 @@ class TestMainSweep(unittest.TestCase):
 class TestShots(unittest.TestCase):
 
     def test_it_is_evaluated_with_the_icl_shots(self):
-        # IT + ICL must differ from ICL only by the tuning, not by the number
-        # of demonstrations (main.py defaults to 4).
         def shots(exp):
             cmd = exp["cmd_args"]
             return cmd[cmd.index("--num_shots") + 1]
@@ -178,8 +176,6 @@ class TestForce(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(moved, "repeat_0_fold_4", "results.json")))
 
     def test_interrupted_force_resumes_without_force(self):
-        # The forced job dies before writing any fold: a plain rerun must pick
-        # the configuration up instead of counting the old folds as done.
         self._run("--force")
         jobs, _ = self._run()
         self.assertEqual(len(jobs), 1)

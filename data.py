@@ -1,5 +1,3 @@
-# data.py
-
 import torch
 import copy
 import os
@@ -161,8 +159,6 @@ def load_text_and_targets(dataset_name: str, prompt_format: int):
         dataset = load_dataset('fancyzhx/ag_news')
         data = pd.concat([pd.DataFrame(dataset['train']),
                           pd.DataFrame(dataset['test'])])
-        # The dataset's own label names. "Science and Technology" lost most of
-        # the class (tech-company news) to "Business" in zero-shot.
         classes = ['World', 'Sports', 'Business', 'Sci/Tech']
         texts   = data['text'].tolist()
         targets = data['label'].tolist()
@@ -217,9 +213,6 @@ class DatasetLoader():
         self.dataset = dataset
 
         if hasattr(dataset, 'pool') and hasattr(dataset.pool, 'to_torch_dataset') and not hasattr(dataset, 'train_data'):
-            # Forward the dataset's own tokenizer so test/train inputs are
-            # really encoded (without it the adapter yields all-zero ids and
-            # evaluation collapses to a single class).
             tok = getattr(dataset, 'tokenizer', None)
             max_len = getattr(dataset, 'max_len', 50)
             self.train_dataset = dataset.pool.to_torch_dataset(split='train', tokenizer=tok, max_len=max_len)

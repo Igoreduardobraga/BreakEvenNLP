@@ -103,7 +103,6 @@ class TestResultStore(unittest.TestCase):
 
         factor_seeds = {f"{k}_seed": 100 for k in ["data_split", "label_choice", "sample_choice", "sample_order", "model_initialisation", "model_randomness"]}
 
-        # Record fold 0
         store.record_fold(
             repeat=0, fold=0, run_seed_used=1,
             randomness_factor_seeds=factor_seeds,
@@ -112,7 +111,6 @@ class TestResultStore(unittest.TestCase):
             duration_seconds=5.0
         )
 
-        # Record fold 1
         store.record_fold(
             repeat=0, fold=1, run_seed_used=2,
             randomness_factor_seeds=factor_seeds,
@@ -443,7 +441,6 @@ class TestResultStore(unittest.TestCase):
             real=[0, 1], predicted=[1, 1],
         )
 
-        # Filter by repeat
         filtered = store.load_summary(filters={"rskf_repeat": 1}, as_dataframe=False)
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["rskf_repeat"], 1)

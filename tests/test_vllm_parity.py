@@ -45,8 +45,6 @@ class TestVLLMParity(unittest.TestCase):
         if tok.pad_token is None:
             tok.pad_token = tok.eos_token
         tok.padding_side = "left"
-        # transformers>=5 removed the load_in_4bit kwarg: use quantization_config
-        # (same NF4/double-quant/bf16 setup as main.py).
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_use_double_quant=True,
@@ -59,15 +57,13 @@ class TestVLLMParity(unittest.TestCase):
 
         hf = ModelEvaluator(model=hf_model, tokenizer=tok, model_name="mistral",
                             batch_size=1, engine="hf")
-        vl = None  # built after the HF model is freed (see below)
+        vl = None
 
         hf_results = {}
         for mode in ("prompting", "icl"):
             g1, p1, d1 = hf.evaluate(pool, mode=mode)
             hf_results[mode] = (list(g1), list(p1), list(d1))
 
-        # Free the HF weights before vLLM init: co-residency OOMs (5GB HF +
-        # 0.85*24GB reservation > 24GB). 0.70 is plenty for 2048 ctx + short prompts.
         import gc
         del hf, hf_model, tok
         gc.collect()
@@ -87,7 +83,7 @@ class TestVLLMParity(unittest.TestCase):
             g2, p2, d2 = vl.evaluate(pool, mode=mode)
             self.assertEqual(g1, g2)
             self.assertEqual(p1, p2, f"label divergence in mode={mode}")
-            norm = lambda s: " ".join(str(s).split())  # noqa: E731
+            norm = lambda s: " ".join(str(s).split())
             mism = sum(1 for a, b in zip(d1, d2) if norm(a) != norm(b))
             print(f"[{mode}] raw-decoded mismatches: {mism}/{len(d1)} "
                   f"(labels must match exactly)")

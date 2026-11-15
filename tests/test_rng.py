@@ -12,13 +12,11 @@ class TestRNGController(unittest.TestCase):
         random.seed(12345)
         val_before = random.random()
 
-        # Capture state
         snapshot = rng.capture_state()
 
         # Mutate state by generating numbers
         mutated_vals = [random.random() for _ in range(5)]
 
-        # Restore state
         snapshot.restore()
         val_after_restore = random.random()
 
@@ -121,11 +119,9 @@ class TestRNGController(unittest.TestCase):
         old_torch, old_cuda, old_np, old_py = states
         r1 = random.random()
 
-        # Restore
         model.restore_rng_state(states)
         r2 = random.random()
 
-        # Test again
         random.seed(555)
         expected_r1 = random.random()
         self.assertEqual(r1, expected_r1)
@@ -171,7 +167,6 @@ class TestRNGController(unittest.TestCase):
     def test_seeded_random_sampler_stream_integration(self):
         from data import SeededRandomSampler
 
-        # Mock dataset with len
         dummy_ds = [0, 1, 2, 3, 4]
         sampler1 = SeededRandomSampler(dummy_ds, seed=42)
         sampler2 = SeededRandomSampler(dummy_ds, seed=42)

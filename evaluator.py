@@ -1,4 +1,3 @@
-# evaluator.py
 """
 Deep ModelEvaluator module for BreakEvenNLP.
 Encapsulates model generation, prompt formatting, and result parsing across model architectures.
@@ -36,8 +35,7 @@ def _parse_results(text, classes):
         if found:
             spans[idx] = found
 
-    # A class whose every match lies inside a longer class's match is not a
-    # separate answer: "not entailment" must not also count as "entailment".
+    # A match nested in a longer class name does not count: "not entailment" is not "entailment".
     def _inside(span, other):
         return other[0] <= span[0] and span[1] <= other[1] and span != other
 
@@ -49,7 +47,6 @@ def _parse_results(text, classes):
         if not nested:
             candidates.add(idx)
 
-    # Returns the index found if exactly one unambiguous candidate matched
     if len(candidates) == 1:
         return next(iter(candidates))
     return -1
@@ -171,9 +168,6 @@ class _Seq2SeqAdapter:
             inputs.extend(data)
             prompts.extend(batch_prompts)
 
-            # No truncation: the tokenizer caps T5 at 512 tokens from the right,
-            # which cut the test sample and answer cue off long ICL prompts
-            # (BoolQ, AG News, DBpedia). T5's relative positions take longer input.
             encoded = self.tokenizer(batch_prompts, return_tensors='pt', padding='longest', truncation=False)
             if hasattr(encoded, 'to'):
                 encoded = encoded.to(self.device)
@@ -209,10 +203,6 @@ class _Seq2SeqAdapter:
 class _CausalLMAdapter:
     """Internal adapter for causal autoregressive models (LLaMA-2, LLaMA-3, Mistral, Zephyr)."""
 
-    # Padded prompt tokens per generate() call: up to batch_size prompts, fewer
-    # when they are long (BoolQ's ICL prompts reach ~5k tokens). Past ~8k tokens
-    # the prefill is already compute-bound on the 4090, so a larger call only
-    # adds padding, and Gemma 4's attention runs out of memory at 16k.
     MAX_BATCH_TOKENS = 8192
 
     def __init__(self, model, tokenizer, model_family, prompter=None, batch_size=1, prompt_format=0, max_new_tokens=10, generation_config=None, device='cuda'):
@@ -448,11 +438,6 @@ class _VLLMAdapter:
     tests/test_vllm_parity.py (Q2/Q9).
     """
 
-    # Conservative per-family budgets for a 24GB RTX 4090 (Q8). vLLM rejects
-    # any prompt longer than max_model_len and aborts the fold, so it must
-    # hold the longest ICL prompt: DBpedia's 28 shots reach ~3k tokens
-    # (Mistral/Zephyr), ~4.5k (Phi/Gemma) and ~6.6k with Llama3's 5 shots per
-    # class. Llama2 stops at its 4096-token context.
     BUDGETS = {
         'llama2': {'gpu_memory_utilization': 0.85, 'max_model_len': 4096, 'max_num_seqs': 16},
         'llama3': {'gpu_memory_utilization': 0.85, 'max_model_len': 8192, 'max_num_seqs': 32},
@@ -469,7 +454,7 @@ class _VLLMAdapter:
                  max_new_tokens=10, seed=0, quantization="bitsandbytes",
                  budget_override=None):
         try:
-            from vllm import LLM  # noqa: F401
+            from vllm import LLM
         except ImportError as e:
             raise ImportError(
                 "vLLM engine requires 'vllm' and 'vllm-bnb-plugin' "
