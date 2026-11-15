@@ -126,7 +126,9 @@ class TestDecodingFlags(unittest.TestCase):
         argv = ["run_experiments.py", "--script", "it-modern", "--datasets", "sst2", "--models", "qwen",
                 "--model-sizes", "9b", "--decoding", "guided", "--dry-run", "--logs-dir", tempfile.mkdtemp()]
         out = io.StringIO()
-        with mock.patch("sys.argv", argv), contextlib.redirect_stdout(out):
+        # Pending regardless of results/, so the dry run lists the commands.
+        with mock.patch("sys.argv", argv), contextlib.redirect_stdout(out), \
+                mock.patch.object(rx, "is_already_completed", return_value=False):
             rx.main()
         commands = [line for line in out.getvalue().splitlines() if "Command:" in line]
         self.assertTrue(commands)
