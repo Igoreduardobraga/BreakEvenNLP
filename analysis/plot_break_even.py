@@ -115,6 +115,15 @@ MODEL_ORDER = ("bert", "roberta", "flan-t5", "llama2", "llama3", "mistral",
 STYLE_COMBOS = (("-", "o"), ("--", "s"), (":", "D"), ("-.", "^"),
                 ("-", "v"), ("--", "P"), (":", "X"), ("-.", "d"))
 
+DATASET_ORDER = ("sst2", "boolq", "ag_news", "snips")
+
+
+def ordered_datasets(agg: pd.DataFrame) -> list:
+    """Datasets of agg in DATASET_ORDER, then the rest alphabetically."""
+    found = agg["dataset"].unique().tolist()
+    return sorted(found, key=lambda d: (DATASET_ORDER.index(d) if d in DATASET_ORDER
+                                        else len(DATASET_ORDER), d))
+
 
 def style_for(line: str):
     """(colour, linestyle, marker): colour from the approach, style from the model."""
@@ -436,7 +445,7 @@ def plot_singles(agg: pd.DataFrame, out_dir: Path, dpi: int, detailed: bool = Fa
 
 def plot_combined(agg: pd.DataFrame, out_dir: Path, dpi: int,
                   name: str = "break_even_combined.png", detailed: bool = False) -> None:
-    datasets = sorted(agg["dataset"].unique().tolist())
+    datasets = ordered_datasets(agg)
     n = len(datasets)
     cols = 2 if n > 1 else 1
     rows = math.ceil(n / cols)
@@ -480,7 +489,7 @@ def plot_by_model(agg: pd.DataFrame, out_dir: Path, dpi: int, single: bool = Tru
     fine-tuning (the same reference in every column), with each approach's
     break-even. One figure per dataset and, if combined, a grid with all."""
     models = llm_models(agg)
-    datasets = sorted(agg["dataset"].unique().tolist())
+    datasets = ordered_datasets(agg)
     if not models:
         log.warning("--by-model: nenhum modelo alem do fine-tuning nos resultados")
         return
